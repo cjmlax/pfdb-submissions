@@ -57,9 +57,9 @@ npm run dev               # http://localhost:8080
 ```bash
 docker compose up -d --build
 ```
-The container exposes port 8080 only on the internal `proxy` network; NPM reaches
-it by container name. Data (SQLite + uploaded screenshots) persists in the
-`pfdb-submissions-data` volume.
+The container exposes port 8080 only on the internal `nginx_proxy_network`; NPM
+reaches it by container name. Data (SQLite + uploaded screenshots) persists in
+the `pfdb-submissions-data` volume.
 
 ## Endpoints
 
@@ -87,7 +87,7 @@ docker compose exec pfdb-submissions node dist/cli/review.js
 This is the recommended setup: NPM authenticates admins against Authentik and
 forwards their identity to the worker, which checks the `ADMIN_GROUP`.
 
-**1. Authentik**
+**1. Authentik — Provider, Application, Group**
 - Create a group, e.g. `pfdb-admin`, and add yourself to it.
 - Create a **Proxy Provider** (forward auth, single application):
   - External host: `https://pfdb-api.cjmlax.com`
@@ -95,58 +95,61 @@ forwards their identity to the worker, which checks the `ADMIN_GROUP`.
 - Create an **Application** bound to that provider.
 - Make sure your outpost (embedded is fine) serves it.
 
-**2. Nginx Proxy Manager**
+**2. Authentik — exempt the public endpoints (important)**
+
+Forward auth protects the *whole* host by default, which means it will also
+intercept `POST /api/submit` and redirect it to login — the browser can't follow
+that cross-origin redirect, so submissions fail with a `302`. Exempt the public
+paths at the provider so they bypass auth entirely:
+
+- Provider → **Edit** → **Advanced protocol settings** → **Unauthenticated Paths**
+  (a.k.a. *Unauthenticated URLs*), one regex per line:
+
+  ```
+  ^/api/submit$
+  ^/api/types$
+  ^/healthz$
+  ```
+
+This is the reliable way to keep the public API open while still gating
+`/api/admin/`. (Doing it purely via nginx `location` precedence in NPM is fragile
+because NPM owns the generated `location /` block — prefer the setting above.)
+
+**3. Nginx Proxy Manager**
 - Add a Proxy Host for `pfdb-api.cjmlax.com` → `pfdb-submissions:8080` (on the
-  shared `proxy` Docker network). Enable websockets + SSL.
-- In the host's **Advanced** tab, paste a snippet like this (adjust the outpost
-  host to your Authentik container). The public `/api/submit` is left open; only
-  the admin area requires login:
+  shared `nginx_proxy_network` Docker network). Enable websockets + SSL.
+- In the host's **Advanced** tab, paste the forward-auth snippet — use the
+  up-to-date one **Authentik publishes for Nginx Proxy Manager** as the source of
+  truth (it wires the `/outpost.goauthentik.io` location and the `auth_request`).
+  The only worker-specific additions you need are forwarding the identity headers
+  to the backend (and, optionally, the anti-spoofing secret):
 
-```nginx
-# --- Authentik outpost (internal) ---
-location /outpost.goauthentik.io {
-    proxy_pass http://authentik-server:9000/outpost.goauthentik.io;
-    proxy_set_header Host $host;
-    proxy_set_header X-Original-URL $scheme://$http_host$request_uri;
-    add_header Set-Cookie $auth_cookie;
-    auth_request_set $auth_cookie $upstream_http_set_cookie;
-    proxy_pass_request_body off;
-    proxy_set_header Content-Length "";
-}
+  ```nginx
+  proxy_set_header X-authentik-username $authentik_username;
+  proxy_set_header X-authentik-groups   $authentik_groups;
+  # Optional anti-spoofing secret (must equal TRUST_PROXY_SECRET):
+  proxy_set_header X-Proxy-Secret "REPLACE_WITH_TRUST_PROXY_SECRET";
+  ```
 
-# --- Public endpoints: no auth ---
-location ~ ^/(api/submit|api/types|healthz) {
-    proxy_pass http://pfdb-submissions:8080;
-}
+  > With the Unauthenticated Paths from step 2 in place, you do **not** also need a
+  > separate `location ~ ^/(api/submit|...)` bypass — Authentik already lets those
+  > through. If you ever stop using Unauthenticated Paths, add a bypass location
+  > with `auth_request off;` for the public paths instead.
 
-# --- Admin area: require Authentik login ---
-location / {
-    auth_request /outpost.goauthentik.io/auth/nginx;
-    error_page 401 = @goauthentik_proxy_signin;
-    auth_request_set $authentik_username $upstream_http_x_authentik_username;
-    auth_request_set $authentik_groups   $upstream_http_x_authentik_groups;
-
-    proxy_pass http://pfdb-submissions:8080;
-    proxy_set_header X-authentik-username $authentik_username;
-    proxy_set_header X-authentik-groups   $authentik_groups;
-    # Optional anti-spoofing secret (must equal TRUST_PROXY_SECRET):
-    proxy_set_header X-Proxy-Secret "REPLACE_WITH_TRUST_PROXY_SECRET";
-}
-
-location @goauthentik_proxy_signin {
-    internal;
-    add_header Set-Cookie $auth_cookie;
-    return 302 /outpost.goauthentik.io/start?rd=$request_uri;
-}
-```
-
-> Tip: Authentik publishes an up-to-date NPM/nginx snippet for proxy providers —
-> use theirs as the source of truth and keep the two `proxy_set_header
-> X-authentik-*` lines plus the optional `X-Proxy-Secret`.
-
-**3. Worker**
+**4. Worker**
 - `AUTH_MODE=forward`, `ADMIN_GROUP=pfdb-admin`, and (recommended)
   `TRUST_PROXY_SECRET` matching the value in the snippet above.
+
+**Verify** (from the host, after deploying):
+
+```bash
+curl -i https://pfdb-api.cjmlax.com/healthz             # 200 {"ok":true,...}
+curl -i -X POST https://pfdb-api.cjmlax.com/api/submit  # 400 (reached the worker) — NOT 302
+```
+
+A `302` on those means auth is still intercepting the public paths (revisit step 2).
+Also confirm `ALLOWED_ORIGIN` matches your website origin, or the browser will
+block reading the response even once the request gets through.
 
 ### Fallbacks
 - `AUTH_MODE=oidc` — the worker runs the OIDC code flow itself (set the
