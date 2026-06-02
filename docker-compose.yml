@@ -4,20 +4,16 @@ services:
     container_name: pfdb-submissions
     restart: unless-stopped
     env_file: .env
-    environment:
-      # .env supplies the rest; these just document the important ones.
-      AUTH_MODE: ${AUTH_MODE:-forward}
-      ADMIN_GROUP: ${ADMIN_GROUP:-pfdb-admin}
     volumes:
       - pfdb-submissions-data:/data
     networks:
-      - proxy
+      - nginx_proxy_network
     # No published ports — Nginx Proxy Manager reaches it over the shared
-    # `proxy` network by container name (pfdb-submissions:8080).
+    # nginx_proxy_network by container name (pfdb-submissions:8080).
 
 volumes:
   pfdb-submissions-data:
 
 networks:
-  proxy:
+  nginx_proxy_network:
     external: true
