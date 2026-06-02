@@ -87,7 +87,8 @@ export async function registerPublicRoutes(app: FastifyInstance) {
         fs.writeFileSync(path.join(uploadsDir, screenshot), fileBuf);
       }
 
-      const data = parsed.data as { note?: string };
+      // Surface the attribution link (if any) in the review note column.
+      const data = parsed.data as { sourceLink?: string };
       const ipHash = createHash('sha256')
         .update(`${req.ip}|${config.auth.cookieSecret}`)
         .digest('hex')
@@ -99,7 +100,7 @@ export async function registerPublicRoutes(app: FastifyInstance) {
         payload: JSON.stringify(parsed.data),
         summary: handler.summarize(parsed.data),
         screenshot,
-        submitter_note: data.note ?? null,
+        submitter_note: data.sourceLink ?? null,
         source_ip: ipHash,
         created_at: new Date().toISOString(),
       });

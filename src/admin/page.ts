@@ -13,6 +13,16 @@ function esc(s: string): string {
   );
 }
 
+// The note column now carries the attribution/source link. Render an http(s)
+// value as a clickable "Source ↗" link; anything else as a plain quote.
+function noteHtml(note: string | null): string {
+  if (!note) return '';
+  if (/^https?:\/\//i.test(note)) {
+    return `<p class="note"><a href="${esc(note)}" target="_blank" rel="noopener noreferrer">Source ↗</a></p>`;
+  }
+  return `<p class="note">“${esc(note)}”</p>`;
+}
+
 // Server-rendered review page. Kept dependency-free: a sprinkle of inline JS
 // calls the JSON approve/reject endpoints and removes the card on success.
 export function renderAdminPage(rows: PendingDto[], username: string, logoutPath: string | null): string {
@@ -24,7 +34,7 @@ export function renderAdminPage(rows: PendingDto[], username: string, logoutPath
         <span class="badge">${esc(r.type)}</span>
         <strong class="summary">${esc(r.summary)}</strong>
         <span class="when">${esc(new Date(r.createdAt).toLocaleString())}</span>
-        ${r.submitterNote ? `<p class="note">“${esc(r.submitterNote)}”</p>` : ''}
+        ${noteHtml(r.submitterNote)}
       </div>
       ${r.screenshot ? `<a href="${esc(r.screenshot)}" target="_blank" rel="noopener"><img class="thumb" src="${esc(r.screenshot)}" alt="screenshot"></a>` : ''}
       <div class="actions">

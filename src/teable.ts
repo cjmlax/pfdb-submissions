@@ -3,25 +3,65 @@ import { config } from './config';
 // Minimal privileged Teable client. The write token lives only in this process,
 // never in the browser — which is the entire reason this worker exists.
 
-export async function teableCreateRecord(
-  tableId: string,
-  fields: Record<string, unknown>,
-): Promise<string> {
+function authHeader(): Record<string, string> {
   if (!config.teable.token) {
-    throw new Error('TEABLE_TOKEN is not set — cannot push approved submissions to Teable.');
+    throw new Error('TEABLE_TOKEN is not set — cannot talk to Teable.');
   }
+  return { Authorization: `Bearer ${config.teable.token}` };
+}
+
+interface TeableField {
+  id: string;
+  name: string;
+  dbFieldName: string;
+}
+
+// Field metadata is cached per table for the process lifetime — field ids are
+// stable, and this lets us write records by field id (unambiguous) instead of by
+// display name, which has historically drifted.
+const fieldCache = new Map<string, TeableField[]>();
+
+async function getFields(tableId: string): Promise<TeableField[]> {
+  const cached = fieldCache.get(tableId);
+  if (cached) return cached;
+  const url = `${config.teable.baseUrl}/api/table/${tableId}/field`;
+  const res = await fetch(url, { headers: authHeader() });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Teable field list failed (${res.status}): ${text.slice(0, 300)}`);
+  }
+  const fields = (await res.json()) as TeableField[];
+  fieldCache.set(tableId, fields);
+  return fields;
+}
+
+// Identify a field either by its display name or its dbFieldName — whichever we
+// can state with confidence for a given field.
+export type FieldRef = { name: string } | { dbFieldName: string };
+
+export async function resolveFieldId(tableId: string, ref: FieldRef): Promise<string> {
+  const fields = await getFields(tableId);
+  const match = fields.find((f) =>
+    'name' in ref ? f.name === ref.name : f.dbFieldName === ref.dbFieldName,
+  );
+  if (!match) {
+    throw new Error(`Field ${JSON.stringify(ref)} not found in table ${tableId}.`);
+  }
+  return match.id;
+}
+
+// Creates a record using field IDs (fieldKeyType: 'id'), so the keys are not
+// sensitive to display-name renames. Returns the new record id.
+export async function teableCreateRecordById(
+  tableId: string,
+  fieldsById: Record<string, unknown>,
+): Promise<string> {
   const url = `${config.teable.baseUrl}/api/table/${tableId}/record`;
   const res = await fetch(url, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${config.teable.token}`,
-    },
-    // fieldKeyType: 'name' lets handlers reference fields by their display name
-    // ("Frog 1", "Frog 2", …), matching how the website reads these tables.
-    body: JSON.stringify({ fieldKeyType: 'name', records: [{ fields }] }),
+    headers: { 'Content-Type': 'application/json', ...authHeader() },
+    body: JSON.stringify({ fieldKeyType: 'id', records: [{ fields: fieldsById }] }),
   });
-
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     throw new Error(`Teable create failed (${res.status}): ${text.slice(0, 500)}`);
