@@ -1,0 +1,12 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Local secrets & runtime data
+.env
+.env.local
+data/
+*.db
+*.db-wal
+*.db-shm
+uploads/

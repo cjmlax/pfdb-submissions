@@ -1,0 +1,95 @@
+import path from 'node:path';
+import fs from 'node:fs';
+import type { FastifyInstance } from 'fastify';
+import { getById, listByStatus, queries, uploadsDir, type SubmissionRow } from '../db';
+import { getHandler } from '../handlers/registry';
+import type { AuthProvider } from '../auth';
+import { renderAdminPage } from '../admin/page';
+
+const MIME_BY_EXT: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  webp: 'image/webp',
+  gif: 'image/gif',
+};
+
+function toDto(r: SubmissionRow) {
+  return {
+    id: r.id,
+    type: r.type,
+    summary: r.summary,
+    submitterNote: r.submitter_note,
+    screenshot: r.screenshot ? `/api/admin/uploads/${r.screenshot}` : null,
+    createdAt: r.created_at,
+  };
+}
+
+export async function registerAdminRoutes(app: FastifyInstance, auth: AuthProvider) {
+  // Everything in this scope is gated by the chosen auth provider.
+  await app.register(async (admin) => {
+    admin.addHook('preHandler', auth.requireAdmin);
+
+    // Server-rendered review page.
+    admin.get('/api/admin/', async (req, reply) => {
+      const pending = listByStatus('pending');
+      reply
+        .type('text/html')
+        .send(renderAdminPage(pending.map(toDto), req.adminUser?.username ?? 'admin', auth.logoutPath));
+    });
+
+    // JSON list (used by the CLI and any future custom UI).
+    admin.get('/api/admin/pending', async () => listByStatus('pending').map(toDto));
+
+    // Serve an uploaded screenshot for review (admin-gated).
+    admin.get('/api/admin/uploads/:file', async (req, reply) => {
+      const file = (req.params as { file: string }).file;
+      if (!/^[\w.-]+$/.test(file)) return reply.code(400).send('bad filename');
+      const full = path.join(uploadsDir, file);
+      if (!fs.existsSync(full)) return reply.code(404).send('not found');
+      const ext = file.split('.').pop()?.toLowerCase() ?? '';
+      return reply.type(MIME_BY_EXT[ext] ?? 'application/octet-stream').send(fs.createReadStream(full));
+    });
+
+    // Approve → push downstream → mark pushed (or error, with the message kept).
+    admin.post('/api/admin/:id/approve', async (req, reply) => {
+      const id = (req.params as { id: string }).id;
+      const row = getById(id);
+      if (!row) return reply.code(404).send({ error: 'not found' });
+      if (row.status !== 'pending') return reply.code(409).send({ error: `already ${row.status}` });
+
+      const handler = getHandler(row.type);
+      if (!handler) return reply.code(500).send({ error: `no handler for type "${row.type}"` });
+
+      try {
+        const payload = JSON.parse(row.payload);
+        const screenshotPath = row.screenshot ? path.join(uploadsDir, row.screenshot) : null;
+        const ref = (await handler.pushDown(payload, { screenshotPath })) || null;
+        queries.setStatus.run({
+          id, status: 'pushed', reviewer_note: null, reviewed_at: new Date().toISOString(), pushed_ref: ref,
+        });
+        req.log.info({ id, ref }, 'submission pushed');
+        return { ok: true, pushed_ref: ref };
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        queries.setStatus.run({
+          id, status: 'error', reviewer_note: message, reviewed_at: new Date().toISOString(), pushed_ref: null,
+        });
+        req.log.error({ id, err: message }, 'push failed');
+        return reply.code(502).send({ error: 'push failed', detail: message });
+      }
+    });
+
+    // Reject → mark rejected with an optional note.
+    admin.post('/api/admin/:id/reject', async (req, reply) => {
+      const id = (req.params as { id: string }).id;
+      const row = getById(id);
+      if (!row) return reply.code(404).send({ error: 'not found' });
+      const note = (req.body as { note?: string } | undefined)?.note ?? null;
+      queries.setStatus.run({
+        id, status: 'rejected', reviewer_note: note, reviewed_at: new Date().toISOString(), pushed_ref: null,
+      });
+      return { ok: true };
+    });
+  });
+}
