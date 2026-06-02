@@ -55,4 +55,14 @@ export const config = {
   upload: {
     maxBytes: Number(opt('UPLOAD_MAX_BYTES', String(5 * 1024 * 1024))),
   },
+
+  notify: {
+    webhookUrls: opt('WEBHOOK_URL', '').split(',').map((s) => s.trim()).filter(Boolean),
+    adminUrl: opt('ADMIN_URL', '').replace(/\/$/, ''),
+    on: {
+      submit:  opt('WEBHOOK_ON_SUBMIT',  'true') !== 'false',
+      approve: opt('WEBHOOK_ON_APPROVE', 'true') !== 'false',
+      reject:  opt('WEBHOOK_ON_REJECT',  'true') !== 'false',
+    },
+  },
 };

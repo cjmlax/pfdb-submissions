@@ -5,6 +5,7 @@ import { getById, listByStatus, queries, uploadsDir, type SubmissionRow } from '
 import { getHandler } from '../handlers/registry';
 import type { AuthProvider } from '../auth';
 import { renderAdminPage } from '../admin/page';
+import { notify } from '../notify';
 
 const MIME_BY_EXT: Record<string, string> = {
   png: 'image/png',
@@ -69,6 +70,7 @@ export async function registerAdminRoutes(app: FastifyInstance, auth: AuthProvid
           id, status: 'pushed', reviewer_note: null, reviewed_at: new Date().toISOString(), pushed_ref: ref,
         });
         req.log.info({ id, ref }, 'submission pushed');
+        notify('submission.approved', { id: row.id, type: row.type, summary: row.summary, submitterNote: row.submitter_note, createdAt: row.created_at });
         return { ok: true, pushed_ref: ref };
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
@@ -89,6 +91,7 @@ export async function registerAdminRoutes(app: FastifyInstance, auth: AuthProvid
       queries.setStatus.run({
         id, status: 'rejected', reviewer_note: note, reviewed_at: new Date().toISOString(), pushed_ref: null,
       });
+      notify('submission.rejected', { id, type: row.type, summary: row.summary, submitterNote: row.submitter_note, createdAt: row.created_at });
       return { ok: true };
     });
   });

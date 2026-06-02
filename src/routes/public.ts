@@ -5,6 +5,7 @@ import type { FastifyInstance } from 'fastify';
 import { config } from '../config';
 import { queries, uploadsDir } from '../db';
 import { getHandler, listHandlers } from '../handlers/registry';
+import { notify } from '../notify';
 
 const IMAGE_EXT: Record<string, string> = {
   'image/png': 'png',
@@ -94,18 +95,22 @@ export async function registerPublicRoutes(app: FastifyInstance) {
         .digest('hex')
         .slice(0, 16);
 
+      const summary = handler.summarize(parsed.data);
+      const createdAt = new Date().toISOString();
+
       queries.insert.run({
         id,
         type: handler.type,
         payload: JSON.stringify(parsed.data),
-        summary: handler.summarize(parsed.data),
+        summary,
         screenshot,
         submitter_note: data.sourceLink ?? null,
         source_ip: ipHash,
-        created_at: new Date().toISOString(),
+        created_at: createdAt,
       });
 
       req.log.info({ id, type: handler.type }, 'submission received');
+      notify('submission.created', { id, type: handler.type, summary, submitterNote: data.sourceLink, createdAt });
       return reply.send({ ok: true, id });
     },
   );
