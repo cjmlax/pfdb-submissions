@@ -1,8 +1,6 @@
 services:
   pfdb-submissions:
-    build: .
-    # Or, once you publish an image:
-    # image: ghcr.io/cjmlax/pfdb-submissions:latest
+    image: ghcr.io/cjmlax/pfdb-submissions:latest
     container_name: pfdb-submissions
     restart: unless-stopped
     env_file: .env
