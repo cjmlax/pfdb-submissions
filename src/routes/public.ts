@@ -1,7 +1,6 @@
 import { randomUUID, createHash } from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs';
-import { Readable } from 'node:stream';
 import type { FastifyInstance } from 'fastify';
 import { config } from '../config';
 import { queries, uploadsDir } from '../db';
@@ -174,10 +173,11 @@ export async function registerPublicRoutes(app: FastifyInstance) {
       lastExported.set(table, new Date().toISOString());
       const date = new Date().toISOString().slice(0, 10);
 
+      const bytes = await upstream.arrayBuffer();
       reply.header('Content-Type', 'text/csv; charset=utf-8');
       reply.header('Content-Disposition', `attachment; filename="${table}-${date}.csv"`);
       reply.header('Cache-Control', 'no-store');
-      return reply.send(Readable.fromWeb(upstream.body as Parameters<typeof Readable.fromWeb>[0]));
+      return reply.send(Buffer.from(bytes));
     },
   );
 }
