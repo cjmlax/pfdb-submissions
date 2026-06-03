@@ -6,6 +6,7 @@ import { config } from '../config';
 import { queries, uploadsDir } from '../db';
 import { getHandler, listHandlers } from '../handlers/registry';
 import { notify } from '../notify';
+import { broadcastSse } from '../sse';
 
 const IMAGE_EXT: Record<string, string> = {
   'image/png': 'png',
@@ -111,6 +112,7 @@ export async function registerPublicRoutes(app: FastifyInstance) {
 
       req.log.info({ id, type: handler.type }, 'submission received');
       notify('submission.created', { id, type: handler.type, summary, submitterNote: data.sourceLink, createdAt });
+      broadcastSse('submission', { id, type: handler.type, summary });
       return reply.send({ ok: true, id });
     },
   );

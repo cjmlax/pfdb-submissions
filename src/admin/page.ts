@@ -90,13 +90,25 @@ export function renderAdminPage(rows: PendingDto[], username: string, logoutPath
   .edit-actions{display:flex;gap:8px}
   .save{background:#2a5fa8;color:#e0ecff}
   .cancel-edit{background:#3d3d3d;color:#bbb}
+  #new-sub-banner{background:#2a5a30;color:#d4ffd9;padding:10px 16px;text-align:center;cursor:pointer;font-size:14px;font-weight:600;border-radius:6px;margin-bottom:12px;display:none}
 </style></head><body>
+  <div id="new-sub-banner" onclick="location.reload()">New submission received — click to refresh</div>
   <header>
     <h1>Pending submissions <span class="who">— ${esc(username)}</span></h1>
     ${logoutPath ? `<form method="post" action="${esc(logoutPath)}" style="margin:0"><button class="logout" style="background:none;color:#9ab;padding:0">Log out</button></form>` : ''}
   </header>
   <ul id="list">${rows.length ? cards : empty}</ul>
 <script>
+(function(){
+  const es=new EventSource('/api/admin/events');
+  es.addEventListener('submission',()=>{
+    if(document.querySelector('.edit-form.open')){
+      document.getElementById('new-sub-banner').style.display='block';
+    } else {
+      location.reload();
+    }
+  });
+})();
 async function act(btn, action){
   const card = btn.closest('.card');
   const id = card.dataset.id;
@@ -114,7 +126,7 @@ async function act(btn, action){
     if(!res.ok) throw new Error(data.detail || data.error || ('HTTP '+res.status));
     result.hidden = false; result.className = 'result ok';
     result.textContent = action === 'approve' ? ('Pushed ✓' + (data.pushed_ref ? ' ('+data.pushed_ref+')' : '')) : 'Rejected ✓';
-    setTimeout(()=>card.remove(), 1200);
+    setTimeout(()=>{card.remove();const l=document.getElementById('list');if(l&&!l.children.length)l.innerHTML='<li class="empty">No pending submissions. 🎉</li>';}, 1200);
   }catch(err){
     result.hidden = false; result.className = 'result err'; result.textContent = String(err.message || err);
     card.querySelectorAll('button').forEach(b => b.disabled = false);
@@ -135,6 +147,7 @@ function openEdit(btn){
     h+='<div class="edit-screenshot">'
       +(ss?'<a href="'+escAttr(ss)+'" target="_blank" rel="noopener"><img class="thumb" src="'+escAttr(ss)+'" alt="current screenshot"></a>':'')
       +'<label>'+(ss?'Replace':'Add')+' screenshot<input type="file" name="screenshot" accept="image/*" style="display:block;margin-top:4px"></label>'
+      +(ss?'<label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" name="clearScreenshot"> Clear screenshot</label>':'')
       +'</div>';
     h+='<div class="edit-actions"><button class="save" onclick="saveEdit(this)">Save</button><button class="cancel-edit" onclick="cancelEdit(this)">Cancel</button></div>';
     h+='<p class="result" hidden></p>';
@@ -163,6 +176,8 @@ async function saveEdit(btn){
   fd.append('payload',JSON.stringify(payload));
   const fi=ef.querySelector('input[type="file"]');
   if(fi?.files?.length) fd.append('screenshot',fi.files[0]);
+  const clearCb=ef.querySelector('input[name="clearScreenshot"]');
+  if(clearCb?.checked) fd.append('clearScreenshot','1');
   try{
     const res=await fetch('/api/admin/'+id,{method:'PATCH',body:fd});
     const data=await res.json().catch(()=>({}));

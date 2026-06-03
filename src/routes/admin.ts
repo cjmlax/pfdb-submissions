@@ -6,6 +6,7 @@ import { getHandler } from '../handlers/registry';
 import type { AuthProvider } from '../auth';
 import { renderAdminPage } from '../admin/page';
 import { notify } from '../notify';
+import { addSseClient, removeSseClient } from '../sse';
 
 const MIME_BY_EXT: Record<string, string> = {
   png: 'image/png',
@@ -49,6 +50,28 @@ export async function registerAdminRoutes(app: FastifyInstance, auth: AuthProvid
 
     // JSON list (used by the CLI and any future custom UI).
     admin.get('/api/admin/pending', async () => listByStatus('pending').map(toDto));
+
+    // Server-Sent Events stream — pushes 'submission' events to open review tabs.
+    admin.get('/api/admin/events', (req, reply) => {
+      reply.hijack();
+      const res = reply.raw;
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+      });
+
+      addSseClient(res);
+
+      const heartbeat = setInterval(() => {
+        try { res.write(': heartbeat\n\n'); } catch { clearInterval(heartbeat); }
+      }, 30_000);
+
+      req.raw.on('close', () => {
+        clearInterval(heartbeat);
+        removeSseClient(res);
+      });
+    });
 
     // Serve an uploaded screenshot for review (admin-gated).
     admin.get('/api/admin/uploads/:file', async (req, reply) => {
@@ -103,6 +126,7 @@ export async function registerAdminRoutes(app: FastifyInstance, auth: AuthProvid
       let payloadStr = '';
       let newFileBuf: Buffer | null = null;
       let newFileExt = '';
+      let clearScreenshot = false;
 
       for await (const part of req.parts()) {
         if (part.type === 'file') {
@@ -115,6 +139,8 @@ export async function registerAdminRoutes(app: FastifyInstance, auth: AuthProvid
           }
         } else if (part.fieldname === 'payload') {
           payloadStr = String(part.value);
+        } else if (part.fieldname === 'clearScreenshot') {
+          clearScreenshot = String(part.value) === '1';
         }
       }
 
@@ -132,6 +158,10 @@ export async function registerAdminRoutes(app: FastifyInstance, auth: AuthProvid
         }
         screenshot = `${id}.${newFileExt}`;
         fs.writeFileSync(path.join(uploadsDir, screenshot), newFileBuf);
+      } else if (clearScreenshot && row.screenshot) {
+        const oldPath = path.join(uploadsDir, row.screenshot);
+        if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+        screenshot = null;
       }
 
       queries.update.run({ id, payload: JSON.stringify(payload), summary, screenshot });
