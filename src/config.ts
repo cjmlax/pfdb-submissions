@@ -47,8 +47,10 @@ export const config = {
     baseUrl: opt('TEABLE_BASE_URL', 'https://teable.cjmlax.com').replace(/\/$/, ''),
     token: opt('TEABLE_TOKEN', ''),
     tables: {
+      frogs:  opt('FROGS_TABLE_ID',  'tblgaaUnZGx1i61RCOZ'),
+      breeds: opt('BREEDS_TABLE_ID', 'tbliUWaVe4eKqJkVEv4'),
       chroma: opt('CHROMA_TABLE_ID', 'tbluqJI6VaHK0fWiPo6'),
-      glass: opt('GLASS_TABLE_ID', 'tblaToM9WCudYNtRjaV'),
+      glass:  opt('GLASS_TABLE_ID',  'tblaToM9WCudYNtRjaV'),
     },
   },
 

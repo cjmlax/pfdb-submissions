@@ -1,12 +1,26 @@
 import { randomUUID, createHash } from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs';
+import { Readable } from 'node:stream';
 import type { FastifyInstance } from 'fastify';
 import { config } from '../config';
 import { queries, uploadsDir } from '../db';
 import { getHandler, listHandlers } from '../handlers/registry';
 import { notify } from '../notify';
 import { broadcastSse } from '../sse';
+
+// Tables exposed via the public export API. Slugs become URL path segments and
+// CSV filenames, so keep them lowercase and URL-safe.
+const EXPORT_TABLES: Record<string, { label: string; tableId: string }> = {
+  frogs:  { label: 'Frogs',        tableId: config.teable.tables.frogs  },
+  breeds: { label: 'Breeds',       tableId: config.teable.tables.breeds },
+  chroma: { label: 'Chroma Combos', tableId: config.teable.tables.chroma },
+  glass:  { label: 'Glass Combos',  tableId: config.teable.tables.glass  },
+};
+
+// In-memory record of when each table was last successfully exported.
+// Resets on worker restart; good enough as a freshness hint for the UI.
+const lastExported = new Map<string, string>();
 
 const IMAGE_EXT: Record<string, string> = {
   'image/png': 'png',
@@ -114,6 +128,56 @@ export async function registerPublicRoutes(app: FastifyInstance) {
       notify('submission.created', { id, type: handler.type, summary, submitterNote: data.sourceLink, createdAt });
       broadcastSse('submission', { id, type: handler.type, summary });
       return reply.send({ ok: true, id });
+    },
+  );
+
+  // Lists available export tables with their last-exported timestamps.
+  app.get('/api/export', async () =>
+    Object.entries(EXPORT_TABLES).map(([slug, { label }]) => ({
+      slug,
+      label,
+      lastExported: lastExported.get(slug) ?? null,
+    })),
+  );
+
+  // Streams a live CSV export from Teable for the requested table. Rate-limited
+  // per IP to prevent hammering the database. Returns JSON errors on failure so
+  // the client can always distinguish a bad response from a partial download.
+  app.get<{ Params: { table: string } }>(
+    '/api/export/:table',
+    { config: { rateLimit: { max: 10, timeWindow: '15 minutes' } } },
+    async (req, reply) => {
+      const { table } = req.params;
+      const entry = EXPORT_TABLES[table];
+      if (!entry) return reply.code(404).send({ error: 'Unknown table' });
+
+      if (!config.teable.token) {
+        return reply.code(503).send({ error: 'Export unavailable' });
+      }
+
+      const exportUrl = `${config.teable.baseUrl}/api/table/${entry.tableId}/export`;
+      let upstream: Response;
+      try {
+        upstream = await fetch(exportUrl, {
+          headers: { Authorization: `Bearer ${config.teable.token}` },
+        });
+      } catch {
+        req.log.warn({ table }, 'could not reach Teable for export');
+        return reply.code(502).send({ error: 'Could not reach the database. Please try again.' });
+      }
+
+      if (!upstream.ok || !upstream.body) {
+        req.log.warn({ table, status: upstream.status }, 'Teable export failed');
+        return reply.code(502).send({ error: 'Export unavailable. Please try again later.' });
+      }
+
+      lastExported.set(table, new Date().toISOString());
+      const date = new Date().toISOString().slice(0, 10);
+
+      reply.header('Content-Type', 'text/csv; charset=utf-8');
+      reply.header('Content-Disposition', `attachment; filename="${table}-${date}.csv"`);
+      reply.header('Cache-Control', 'no-store');
+      return reply.send(Readable.fromWeb(upstream.body as Parameters<typeof Readable.fromWeb>[0]));
     },
   );
 }
