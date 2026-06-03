@@ -52,23 +52,27 @@ export async function resolveFieldId(tableId: string, ref: FieldRef): Promise<st
   return match.id;
 }
 
-// Uploads a local file to Teable's attachment endpoint and returns the
-// attachment descriptor (token, name, size, mimetype) ready to embed in a
-// record's attachment field array.
-export async function teableUploadAttachment(filePath: string): Promise<Record<string, unknown>> {
+// Uploads a local file to an existing record's attachment field.
+// Must be called after the record is created — Teable's upload endpoint is
+// scoped to a specific record and field, not a free-standing upload.
+export async function teableUploadAttachmentToRecord(
+  tableId: string,
+  recordId: string,
+  fieldId: string,
+  filePath: string,
+): Promise<void> {
   const data = await readFile(filePath);
   const name = basename(filePath);
   const ext = name.split('.').pop()?.toLowerCase();
   const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : ext === 'gif' ? 'image/gif' : 'image/jpeg';
   const form = new FormData();
   form.append('file', new Blob([data], { type: mime }), name);
-  const url = `${config.teable.baseUrl}/api/attachments/upload`;
+  const url = `${config.teable.baseUrl}/api/table/${tableId}/record/${recordId}/${fieldId}/uploadAttachment`;
   const res = await fetch(url, { method: 'POST', headers: authHeader(), body: form });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     throw new Error(`Teable attachment upload failed (${res.status}): ${text.slice(0, 300)}`);
   }
-  return res.json() as Promise<Record<string, unknown>>;
 }
 
 // Creates a record using field IDs (fieldKeyType: 'id'), so the keys are not
