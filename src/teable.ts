@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises';
+import { basename } from 'node:path';
 import { config } from './config';
 
 // Minimal privileged Teable client. The write token lives only in this process,
@@ -48,6 +50,25 @@ export async function resolveFieldId(tableId: string, ref: FieldRef): Promise<st
     throw new Error(`Field ${JSON.stringify(ref)} not found in table ${tableId}.`);
   }
   return match.id;
+}
+
+// Uploads a local file to Teable's attachment endpoint and returns the
+// attachment descriptor (token, name, size, mimetype) ready to embed in a
+// record's attachment field array.
+export async function teableUploadAttachment(filePath: string): Promise<Record<string, unknown>> {
+  const data = await readFile(filePath);
+  const name = basename(filePath);
+  const ext = name.split('.').pop()?.toLowerCase();
+  const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : ext === 'gif' ? 'image/gif' : 'image/jpeg';
+  const form = new FormData();
+  form.append('file', new Blob([data], { type: mime }), name);
+  const url = `${config.teable.baseUrl}/api/attachments/upload`;
+  const res = await fetch(url, { method: 'POST', headers: authHeader(), body: form });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Teable attachment upload failed (${res.status}): ${text.slice(0, 300)}`);
+  }
+  return res.json() as Promise<Record<string, unknown>>;
 }
 
 // Creates a record using field IDs (fieldKeyType: 'id'), so the keys are not

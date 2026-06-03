@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { SubmissionHandler } from '../types';
-import { resolveFieldId, teableCreateRecordById } from '../teable';
+import { resolveFieldId, teableCreateRecordById, teableUploadAttachment } from '../teable';
 import { config } from '../config';
 
 // A community-submitted Chroma or Glass combination. The website resolves every
@@ -37,7 +37,7 @@ export const comboHandler: SubmissionHandler<ComboPayload> = {
     const lost = p.lostFrogName ? ` (replaces ${p.lostFrogName})` : '';
     return head + result + lost;
   },
-  async pushDown(p) {
+  async pushDown(p, ctx) {
     const tableId =
       p.variant === 'chroma' ? config.teable.tables.chroma : config.teable.tables.glass;
 
@@ -53,6 +53,10 @@ export const comboHandler: SubmissionHandler<ComboPayload> = {
     }
     if (p.sourceLink) {
       fields[await resolveFieldId(tableId, { dbFieldName: 'source_link' })] = p.sourceLink;
+    }
+    if (ctx.screenshotPath) {
+      const attachment = await teableUploadAttachment(ctx.screenshotPath);
+      fields[await resolveFieldId(tableId, { dbFieldName: 'screenshot' })] = [attachment];
     }
 
     return teableCreateRecordById(tableId, fields);
