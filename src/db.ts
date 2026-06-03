@@ -61,6 +61,14 @@ export const queries = {
            pushed_ref = @pushed_ref
      WHERE id = @id
   `),
+  update: db.prepare(`
+    UPDATE submissions
+       SET payload    = @payload,
+           summary    = @summary,
+           screenshot = @screenshot
+     WHERE id = @id
+       AND status = 'pending'
+  `),
 };
 
 export function getById(id: string): SubmissionRow | undefined {

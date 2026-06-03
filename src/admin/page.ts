@@ -1,6 +1,7 @@
 interface PendingDto {
   id: string;
   type: string;
+  payload: string;
   summary: string;
   submitterNote: string | null;
   screenshot: string | null;
@@ -29,7 +30,7 @@ export function renderAdminPage(rows: PendingDto[], username: string, logoutPath
   const cards = rows
     .map(
       (r) => `
-    <li class="card" data-id="${esc(r.id)}">
+    <li class="card" data-id="${esc(r.id)}" data-payload="${esc(r.payload)}" data-screenshot="${esc(r.screenshot ?? '')}">
       <div class="card-main">
         <span class="badge">${esc(r.type)}</span>
         <strong class="summary">${esc(r.summary)}</strong>
@@ -40,8 +41,10 @@ export function renderAdminPage(rows: PendingDto[], username: string, logoutPath
       <div class="actions">
         <button class="approve" onclick="act(this,'approve')">Approve</button>
         <button class="reject" onclick="act(this,'reject')">Reject</button>
+        <button class="edit-btn" onclick="openEdit(this)">Edit</button>
       </div>
       <p class="result" hidden></p>
+      <div class="edit-form"></div>
     </li>`,
     )
     .join('');
@@ -59,7 +62,7 @@ export function renderAdminPage(rows: PendingDto[], username: string, logoutPath
   h1{font-size:20px;margin:0}
   .who{color:#999;font-size:14px}
   ul{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:12px}
-  .card{background:#242424;border:1px solid #333;border-radius:10px;padding:14px;display:grid;grid-template-columns:1fr auto;grid-template-areas:"main thumb" "actions thumb" "result result";gap:8px 14px;align-items:start}
+  .card{background:#242424;border:1px solid #333;border-radius:10px;padding:14px;display:grid;grid-template-columns:1fr auto;grid-template-areas:"main thumb" "actions thumb" "result result" "edit edit";gap:8px 14px;align-items:start}
   .card-main{grid-area:main}
   .badge{display:inline-block;font-size:11px;text-transform:uppercase;letter-spacing:.04em;background:#333;color:#bbb;border-radius:4px;padding:2px 7px;margin-right:8px;vertical-align:middle}
   .summary{font-size:16px}
@@ -76,6 +79,17 @@ export function renderAdminPage(rows: PendingDto[], username: string, logoutPath
   .result.err{color:#e88}
   .empty{color:#999;text-align:center;padding:40px}
   a.logout{color:#9ab;font-size:14px}
+  .edit-btn{background:#444;color:#ccc}
+  .edit-form{grid-area:edit;display:none;flex-direction:column;gap:10px;padding-top:10px;border-top:1px solid #333;margin-top:2px}
+  .edit-form.open{display:flex}
+  .edit-fields{display:grid;grid-template-columns:1fr 1fr;gap:6px 16px}
+  .edit-label{display:flex;flex-direction:column;gap:3px;font-size:12px;color:#999}
+  .edit-input{background:#111;border:1px solid #444;border-radius:4px;color:#eee;padding:5px 8px;font-size:13px;font-family:monospace;width:100%;box-sizing:border-box}
+  .edit-screenshot{display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:13px;color:#aaa}
+  .edit-screenshot .thumb{max-width:80px;max-height:60px;border-radius:4px;border:1px solid #333}
+  .edit-actions{display:flex;gap:8px}
+  .save{background:#2a5fa8;color:#e0ecff}
+  .cancel-edit{background:#3d3d3d;color:#bbb}
 </style></head><body>
   <header>
     <h1>Pending submissions <span class="who">— ${esc(username)}</span></h1>
@@ -104,6 +118,59 @@ async function act(btn, action){
   }catch(err){
     result.hidden = false; result.className = 'result err'; result.textContent = String(err.message || err);
     card.querySelectorAll('button').forEach(b => b.disabled = false);
+  }
+}
+function escAttr(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);}
+function openEdit(btn){
+  const card=btn.closest('.card');
+  const ef=card.querySelector('.edit-form');
+  if(!ef.dataset.built){
+    const payload=JSON.parse(card.dataset.payload||'{}');
+    const ss=card.dataset.screenshot||'';
+    let h='<div class="edit-fields">';
+    for(const [k,v] of Object.entries(payload)){
+      h+='<label class="edit-label">'+escAttr(k)+'<input class="edit-input" name="'+escAttr(k)+'" value="'+escAttr(String(v??''))+'"></label>';
+    }
+    h+='</div>';
+    h+='<div class="edit-screenshot">'
+      +(ss?'<a href="'+escAttr(ss)+'" target="_blank" rel="noopener"><img class="thumb" src="'+escAttr(ss)+'" alt="current screenshot"></a>':'')
+      +'<label>'+(ss?'Replace':'Add')+' screenshot<input type="file" name="screenshot" accept="image/*" style="display:block;margin-top:4px"></label>'
+      +'</div>';
+    h+='<div class="edit-actions"><button class="save" onclick="saveEdit(this)">Save</button><button class="cancel-edit" onclick="cancelEdit(this)">Cancel</button></div>';
+    h+='<p class="result" hidden></p>';
+    ef.innerHTML=h;
+    ef.dataset.built='1';
+  }
+  ef.classList.add('open');
+  card.querySelector('.card-main').hidden=true;
+  card.querySelector('.actions').hidden=true;
+}
+function cancelEdit(btn){
+  const card=btn.closest('.card');
+  card.querySelector('.edit-form').classList.remove('open');
+  card.querySelector('.card-main').hidden=false;
+  card.querySelector('.actions').hidden=false;
+}
+async function saveEdit(btn){
+  const card=btn.closest('.card');
+  const id=card.dataset.id;
+  const ef=card.querySelector('.edit-form');
+  const result=ef.querySelector('.result');
+  ef.querySelectorAll('button').forEach(b=>b.disabled=true);
+  const payload={};
+  ef.querySelectorAll('.edit-input').forEach(inp=>{payload[inp.name]=inp.value;});
+  const fd=new FormData();
+  fd.append('payload',JSON.stringify(payload));
+  const fi=ef.querySelector('input[type="file"]');
+  if(fi?.files?.length) fd.append('screenshot',fi.files[0]);
+  try{
+    const res=await fetch('/api/admin/'+id,{method:'PATCH',body:fd});
+    const data=await res.json().catch(()=>({}));
+    if(!res.ok) throw new Error(data.error||'HTTP '+res.status);
+    location.reload();
+  }catch(err){
+    result.hidden=false; result.className='result err'; result.textContent=String(err.message||err);
+    ef.querySelectorAll('button').forEach(b=>b.disabled=false);
   }
 }
 </script>

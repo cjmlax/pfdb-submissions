@@ -15,10 +15,18 @@ const MIME_BY_EXT: Record<string, string> = {
   gif: 'image/gif',
 };
 
+const IMAGE_EXT: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/webp': 'webp',
+  'image/gif': 'gif',
+};
+
 function toDto(r: SubmissionRow) {
   return {
     id: r.id,
     type: r.type,
+    payload: r.payload,
     summary: r.summary,
     submitterNote: r.submitter_note,
     screenshot: r.screenshot ? `/api/admin/uploads/${r.screenshot}` : null,
@@ -80,6 +88,55 @@ export async function registerAdminRoutes(app: FastifyInstance, auth: AuthProvid
         req.log.error({ id, err: message }, 'push failed');
         return reply.code(502).send({ error: 'push failed', detail: message });
       }
+    });
+
+    // Edit → update payload and/or screenshot, leave status as pending.
+    admin.patch('/api/admin/:id', async (req, reply) => {
+      const id = (req.params as { id: string }).id;
+      const row = getById(id);
+      if (!row) return reply.code(404).send({ error: 'not found' });
+      if (row.status !== 'pending') return reply.code(409).send({ error: `cannot edit: already ${row.status}` });
+
+      const handler = getHandler(row.type);
+      if (!handler) return reply.code(500).send({ error: `no handler for type "${row.type}"` });
+
+      let payloadStr = '';
+      let newFileBuf: Buffer | null = null;
+      let newFileExt = '';
+
+      for await (const part of req.parts()) {
+        if (part.type === 'file') {
+          if (part.fieldname === 'screenshot') {
+            const ext = IMAGE_EXT[part.mimetype];
+            const buf = await part.toBuffer();
+            if (ext && buf.length > 0) { newFileBuf = buf; newFileExt = ext; }
+          } else {
+            await part.toBuffer();
+          }
+        } else if (part.fieldname === 'payload') {
+          payloadStr = String(part.value);
+        }
+      }
+
+      let payload: unknown;
+      try { payload = JSON.parse(payloadStr || '{}'); }
+      catch { return reply.code(400).send({ error: 'invalid payload JSON' }); }
+
+      const summary = handler.summarize(payload as never);
+
+      let screenshot = row.screenshot;
+      if (newFileBuf) {
+        if (row.screenshot) {
+          const oldPath = path.join(uploadsDir, row.screenshot);
+          if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+        }
+        screenshot = `${id}.${newFileExt}`;
+        fs.writeFileSync(path.join(uploadsDir, screenshot), newFileBuf);
+      }
+
+      queries.update.run({ id, payload: JSON.stringify(payload), summary, screenshot });
+      req.log.info({ id }, 'submission edited');
+      return { ok: true, summary };
     });
 
     // Reject → mark rejected with an optional note.
