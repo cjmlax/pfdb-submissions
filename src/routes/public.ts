@@ -148,6 +148,34 @@ export async function registerPublicRoutes(app: FastifyInstance) {
     },
   );
 
+  // Fetches every export table, computes its hash, and persists the result.
+  // Runs once shortly after startup and then every 24 hours.
+  async function refreshHashes() {
+    app.log.info('export hash refresh started');
+    for (const [slug, { tableId }] of Object.entries(EXPORT_TABLES)) {
+      try {
+        const res = await fetch(`${config.teable.baseUrl}/api/export/${tableId}`, {
+          headers: { Authorization: `Bearer ${config.teable.token}` },
+        });
+        if (!res.ok) {
+          app.log.warn({ slug, status: res.status }, 'hash refresh: Teable export failed');
+          continue;
+        }
+        const buf = Buffer.from(await res.arrayBuffer());
+        const hash = createHash('sha256').update(buf).digest('hex').slice(0, 8);
+        exportState.set(slug, { hash, exportedAt: new Date().toISOString() });
+      } catch (err) {
+        app.log.warn({ slug, err }, 'hash refresh: fetch failed');
+      }
+    }
+    saveState(exportState);
+    app.log.info('export hash refresh complete');
+  }
+
+  const refreshMs = config.export.refreshIntervalHours * 60 * 60 * 1000;
+  setTimeout(refreshHashes, 10_000); // run once after startup settles
+  setInterval(refreshHashes, refreshMs);
+
   // Lists available export tables with their persisted hash and timestamp.
   app.get('/api/export', async () =>
     Object.entries(EXPORT_TABLES).map(([slug, { label }]) => {

@@ -58,6 +58,10 @@ export const config = {
     maxBytes: Number(opt('UPLOAD_MAX_BYTES', String(5 * 1024 * 1024))),
   },
 
+  export: {
+    refreshIntervalHours: Number(opt('EXPORT_REFRESH_HOURS', '24')),
+  },
+
   notify: {
     webhookUrls: opt('WEBHOOK_URL', '').split(',').map((s) => s.trim()).filter(Boolean),
     adminUrl: opt('ADMIN_URL', '').replace(/\/$/, ''),
