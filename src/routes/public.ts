@@ -154,7 +154,7 @@ export async function registerPublicRoutes(app: FastifyInstance) {
         return reply.code(503).send({ error: 'Export unavailable' });
       }
 
-      const exportUrl = `${config.teable.baseUrl}/api/table/${entry.tableId}/export`;
+      const exportUrl = `${config.teable.baseUrl}/api/export/${entry.tableId}`;
       let upstream: Response;
       try {
         upstream = await fetch(exportUrl, {
