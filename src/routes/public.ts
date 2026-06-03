@@ -17,9 +17,27 @@ const EXPORT_TABLES: Record<string, { label: string; tableId: string }> = {
   glass:  { label: 'Glass Combos',  tableId: config.teable.tables.glass  },
 };
 
-// In-memory record of when each table was last successfully exported.
-// Resets on worker restart; good enough as a freshness hint for the UI.
-const lastExported = new Map<string, string>();
+// Persistent export state: hash + timestamp for each table, survives restarts.
+interface ExportEntry { hash: string; exportedAt: string }
+const STATE_FILE = path.join(config.dataDir, 'export-state.json');
+
+function loadState(): Map<string, ExportEntry> {
+  try {
+    const raw = fs.readFileSync(STATE_FILE, 'utf8');
+    const obj = JSON.parse(raw) as Record<string, ExportEntry>;
+    return new Map(Object.entries(obj));
+  } catch {
+    return new Map();
+  }
+}
+
+function saveState(state: Map<string, ExportEntry>): void {
+  try {
+    fs.writeFileSync(STATE_FILE, JSON.stringify(Object.fromEntries(state), null, 2));
+  } catch { /* non-fatal — state remains correct in memory until next restart */ }
+}
+
+const exportState = loadState();
 
 const IMAGE_EXT: Record<string, string> = {
   'image/png': 'png',
@@ -130,13 +148,12 @@ export async function registerPublicRoutes(app: FastifyInstance) {
     },
   );
 
-  // Lists available export tables with their last-exported timestamps.
+  // Lists available export tables with their persisted hash and timestamp.
   app.get('/api/export', async () =>
-    Object.entries(EXPORT_TABLES).map(([slug, { label }]) => ({
-      slug,
-      label,
-      lastExported: lastExported.get(slug) ?? null,
-    })),
+    Object.entries(EXPORT_TABLES).map(([slug, { label }]) => {
+      const entry = exportState.get(slug);
+      return { slug, label, hash: entry?.hash ?? null, exportedAt: entry?.exportedAt ?? null };
+    }),
   );
 
   // Streams a live CSV export from Teable for the requested table. Rate-limited
@@ -170,14 +187,18 @@ export async function registerPublicRoutes(app: FastifyInstance) {
         return reply.code(502).send({ error: 'Export unavailable. Please try again later.' });
       }
 
-      lastExported.set(table, new Date().toISOString());
-      const date = new Date().toISOString().slice(0, 10);
-
       const bytes = await upstream.arrayBuffer();
+      const buf = Buffer.from(bytes);
+      const hash = createHash('sha256').update(buf).digest('hex').slice(0, 8);
+      const exportedAt = new Date().toISOString();
+      exportState.set(table, { hash, exportedAt });
+      saveState(exportState);
+
+      const date = exportedAt.slice(0, 10);
       reply.header('Content-Type', 'text/csv; charset=utf-8');
-      reply.header('Content-Disposition', `attachment; filename="${table}-${date}.csv"`);
+      reply.header('Content-Disposition', `attachment; filename="${table}-${date}-${hash}.csv"`);
       reply.header('Cache-Control', 'no-store');
-      return reply.send(Buffer.from(bytes));
+      return reply.send(buf);
     },
   );
 }
