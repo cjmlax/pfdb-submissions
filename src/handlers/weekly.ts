@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { SubmissionHandler } from '../types';
-import { resolveFieldId, teableCreateRecordById, teableGetMaxNumber } from '../teable';
+import { teableCreateRecordById, teableGetMaxNumber } from '../teable';
 import { config } from '../config';
 
 // Mirrors getCurrentISOWeek() on the frontend. Calculated at approval time so
@@ -27,19 +27,27 @@ function getCurrentISOWeek(): string {
   return `${d.getUTCFullYear()}-${String(weekNo).padStart(2, '0')}`;
 }
 
-const FROG_SLOTS = ['NameA', 'NameB', 'NameC', 'NameD', 'NameE', 'NameF', 'NameG', 'NameH'] as const;
+const SET_NAME_FIELD_ID  = 'fldGxycvkmQqAM1ACak';
+const SET_DATE_FIELD_ID  = 'fld0g2OJuIM4fScLjfS';
+const SET_CHRON_FIELD_ID = 'fldaGzZa0KXnxP6HHYm';
+const STAMP_FIELD_ID_A   = 'fld4Ydpj2Q4PWFu5B5K'; // Potion Reward
+const STAMP_FIELD_ID_B   = 'fldO6PVSdLA2sOAOkdc'; // Stamp Reward
 
-// SetDate field ID (fld0g2OJuIM4fScLjfS) is hardcoded since we write via
-// fieldKeyType=id and we know the ID won't change even if the display name does.
-const SET_DATE_FIELD_ID   = 'fld0g2OJuIM4fScLjfS';
-const SET_CHRON_FIELD_ID  = 'fldaGzZa0KXnxP6HHYm';
-const STAMP_FIELD_ID_A    = 'fld4Ydpj2Q4PWFu5B5K';
-const STAMP_FIELD_ID_B    = 'fldO6PVSdLA2sOAOkdc';
+const FROG_FIELD_IDS = [
+  'fldRIvXvkq7FC4w7BZ7', // Frog A
+  'fldfc9j6HBvPwlnoUEj', // Frog B
+  'fldAN1uTnT1uzz1TtgI', // Frog C
+  'fldyxjg67HhOS6zRzgv', // Frog D
+  'fldt55ft0SzhSfofuz9', // Frog E
+  'fldH2VSg3XE8bmTLrXr', // Frog F
+  'fldQ8hL7rZFBiAIoywb', // Frog G
+  'fldHAl67k7o9GQwB1n4', // Frog H
+] as const;
 
 export const weeklySchema = z.object({
   setName: z.string().min(1).max(120),
   reward:  z.number().int().positive(),
-  frogs:   z.array(z.string().min(1).max(120)).min(4).max(8),
+  frogs:   z.array(z.string().min(1).max(40)).min(4).max(8), // Teable record IDs
 });
 
 export type WeeklyPayload = z.infer<typeof weeklySchema>;
@@ -52,17 +60,17 @@ export const weeklyHandler: SubmissionHandler<WeeklyPayload> = {
     `${p.setName} — ${p.frogs.length} frog${p.frogs.length !== 1 ? 's' : ''}, ${p.reward} stamps`,
 
   async pushDown(p) {
-    const tableId  = config.teable.tables.weekly;
+    const tableId   = config.teable.tables.weekly;
     const nextChron = (await teableGetMaxNumber(tableId, SET_CHRON_FIELD_ID)) + 1;
     const fields: Record<string, unknown> = {
-      [await resolveFieldId(tableId, { name: 'SetName' })]: p.setName,
-      [SET_DATE_FIELD_ID]:   getCurrentISOWeek(),
-      [SET_CHRON_FIELD_ID]:  nextChron,
-      [STAMP_FIELD_ID_A]:    p.reward,
-      [STAMP_FIELD_ID_B]:    p.reward,
+      [SET_NAME_FIELD_ID]:  p.setName,
+      [SET_DATE_FIELD_ID]:  getCurrentISOWeek(),
+      [SET_CHRON_FIELD_ID]: nextChron,
+      [STAMP_FIELD_ID_A]:   p.reward,
+      [STAMP_FIELD_ID_B]:   p.reward,
     };
     for (let i = 0; i < p.frogs.length; i++) {
-      fields[await resolveFieldId(tableId, { name: FROG_SLOTS[i] })] = p.frogs[i];
+      fields[FROG_FIELD_IDS[i]] = [{ id: p.frogs[i] }];
     }
     return teableCreateRecordById(tableId, fields);
   },
