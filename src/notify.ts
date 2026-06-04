@@ -34,8 +34,6 @@ export function notify(event: NotifyEvent, sub: SubmissionInfo): void {
 
   const meta = META[event];
   const label = variantLabel(sub.summary);
-  const messageLines = [sub.summary];
-  if (sub.submitterNote) messageLines.push(`Note: ${sub.submitterNote}`);
 
   for (const rawUrl of webhookUrls) {
     const url = new URL(rawUrl);
@@ -47,6 +45,16 @@ export function notify(event: NotifyEvent, sub: SubmissionInfo): void {
     };
 
     if (adminUrl) headers['X-Click'] = `${adminUrl}/api/admin/`;
+
+    const { actionSecret } = config.notify;
+    if (event === 'submission.created' && adminUrl && actionSecret) {
+      const base = `${adminUrl}/api/action/${sub.id}`;
+      const auth = `headers.Authorization=Bearer ${actionSecret}`;
+      headers['X-Actions'] = [
+        `http, Approve, ${base}/approve, method=POST, ${auth}`,
+        `http, Reject,  ${base}/reject,  method=POST, ${auth}`,
+      ].join('; ');
+    }
     if (url.username) {
       headers['Authorization'] = `Basic ${btoa(`${url.username}:${url.password}`)}`;
       url.username = '';
@@ -56,7 +64,7 @@ export function notify(event: NotifyEvent, sub: SubmissionInfo): void {
     fetch(url.toString(), {
       method: 'POST',
       headers,
-      body: messageLines.join('\n'),
+      body: sub.summary,
     }).catch((err: Error) => {
       console.error(`[notify] webhook to ${url} failed: ${err.message}`);
     });

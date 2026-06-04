@@ -66,6 +66,7 @@ export const config = {
   notify: {
     webhookUrls: opt('WEBHOOK_URL', '').split(',').map((s) => s.trim()).filter(Boolean),
     adminUrl: opt('ADMIN_URL', '').replace(/\/$/, ''),
+    actionSecret: opt('ACTION_SECRET', ''),
     on: {
       submit:  opt('WEBHOOK_ON_SUBMIT',  'true') !== 'false',
       approve: opt('WEBHOOK_ON_APPROVE', 'true') !== 'false',
