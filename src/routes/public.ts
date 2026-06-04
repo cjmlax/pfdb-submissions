@@ -1,6 +1,7 @@
 import { randomUUID, createHash } from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs';
+import { schedule as cronSchedule } from 'node-cron';
 import type { FastifyInstance } from 'fastify';
 import { config } from '../config';
 import { queries, uploadsDir } from '../db';
@@ -173,9 +174,8 @@ export async function registerPublicRoutes(app: FastifyInstance) {
     app.log.info('export hash refresh complete');
   }
 
-  const refreshMs = config.export.refreshIntervalHours * 60 * 60 * 1000;
   setTimeout(refreshHashes, 10_000); // run once after startup settles
-  setInterval(refreshHashes, refreshMs);
+  cronSchedule(config.export.hashRefreshCron, refreshHashes);
 
   // Lists available export tables with their persisted hash and timestamp.
   app.get('/api/export', async () =>

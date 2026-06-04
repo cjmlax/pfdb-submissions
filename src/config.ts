@@ -60,7 +60,7 @@ export const config = {
   },
 
   export: {
-    refreshIntervalHours: Number(opt('EXPORT_REFRESH_HOURS', '24')),
+    hashRefreshCron: opt('EXPORT_HASH_CRON', '0 0 * * *'),
   },
 
   notify: {
