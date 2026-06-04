@@ -19,6 +19,9 @@ export interface SubmissionHandler<P = unknown> {
   acceptsScreenshot?: boolean;
   // Validates the raw payload from the website. Rejected at submit time.
   schema: ZodType<P>;
+  // Optional async check run after schema validation but before the row is stored.
+  // Throw an Error with a user-facing message to reject the submission (→ HTTP 409).
+  preSubmit?(payload: P): Promise<void>;
   // One-line summary shown in the review list.
   summarize(payload: P): string;
   // Pushes an approved submission to its destination (e.g. a Teable table).

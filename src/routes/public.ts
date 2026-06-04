@@ -6,6 +6,7 @@ import type { FastifyInstance } from 'fastify';
 import { config } from '../config';
 import { queries, uploadsDir } from '../db';
 import { getHandler, listHandlers } from '../handlers/registry';
+import { getWeeklyStatus } from '../handlers/weekly';
 import { notify } from '../notify';
 import { broadcastSse } from '../sse';
 import { compressImage } from '../imageProcess';
@@ -54,6 +55,10 @@ export async function registerPublicRoutes(app: FastifyInstance) {
   app.get('/api/types', async () =>
     listHandlers().map((h) => ({ type: h.type, label: h.label, acceptsScreenshot: !!h.acceptsScreenshot })),
   );
+
+  // Returns whether a weekly set already exists for the current active week.
+  // Used by the submission page to show a notice before the user fills out the form.
+  app.get('/api/weekly/status', async () => getWeeklyStatus());
 
   // Public submission endpoint. Accepts multipart/form-data with fields:
   //   type     — handler key (e.g. "combo")
@@ -112,6 +117,14 @@ export async function registerPublicRoutes(app: FastifyInstance) {
       const parsed = handler.schema.safeParse(payload);
       if (!parsed.success) {
         return reply.code(400).send({ error: 'validation failed', detail: parsed.error.flatten() });
+      }
+
+      if (handler.preSubmit) {
+        try {
+          await handler.preSubmit(parsed.data);
+        } catch (e) {
+          return reply.code(409).send({ error: e instanceof Error ? e.message : 'Submission not allowed.' });
+        }
       }
 
       const id = randomUUID();

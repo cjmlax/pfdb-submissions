@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { SubmissionHandler } from '../types';
-import { teableCreateRecordById, teableGetMaxNumber } from '../teable';
+import { teableCreateRecordById, teableFieldValueExists, teableGetMaxNumber } from '../teable';
 import { config } from '../config';
 
 // Mirrors getCurrentISOWeek() on the frontend. Calculated at approval time so
@@ -43,6 +43,12 @@ const FROG_FIELD_IDS = [
   'fldQ8hL7rZFBiAIoywb', // Frog G
   'fldHAl67k7o9GQwB1n4', // Frog H
 ] as const;
+
+export async function getWeeklyStatus(): Promise<{ week: string; exists: boolean }> {
+  const week = getCurrentISOWeek();
+  const exists = await teableFieldValueExists(config.teable.tables.weekly, SET_DATE_FIELD_ID, week);
+  return { week, exists };
+}
 
 export const weeklySchema = z.object({
   setName: z.string().min(1).max(120),
