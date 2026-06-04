@@ -42,6 +42,7 @@ export function renderAdminPage(rows: PendingDto[], username: string, logoutPath
         <button class="approve" onclick="act(this,'approve')">Approve</button>
         <button class="reject" onclick="act(this,'reject')">Reject</button>
         <button class="edit-btn" onclick="openEdit(this)">Edit</button>
+        ${r.screenshot ? `<button class="crop-btn" onclick="openCrop(this)">Crop</button>` : ''}
       </div>
       <p class="result" hidden></p>
       <div class="edit-form"></div>
@@ -80,6 +81,12 @@ export function renderAdminPage(rows: PendingDto[], username: string, logoutPath
   .empty{color:#999;text-align:center;padding:40px}
   a.logout{color:#9ab;font-size:14px}
   .edit-btn{background:#444;color:#ccc}
+  .crop-btn{background:#2a5a78;color:#c8eeff}
+  #crop-dialog{background:#1e1e1e;border:1px solid #444;border-radius:10px;padding:16px;max-width:95vw;max-height:95vh;overflow:auto;color:#eee}
+  #crop-dialog::backdrop{background:rgba(0,0,0,.75)}
+  #crop-canvas{cursor:crosshair;display:block;max-width:100%;user-select:none}
+  .crop-footer{display:flex;justify-content:space-between;align-items:center;margin-top:10px;gap:12px}
+  .crop-hint{font-size:13px;color:#888}
   .edit-form{grid-area:edit;display:none;flex-direction:column;gap:10px;padding-top:10px;border-top:1px solid #333;margin-top:2px}
   .edit-form.open{display:flex}
   .edit-fields{display:grid;grid-template-columns:1fr 1fr;gap:6px 16px}
@@ -92,6 +99,16 @@ export function renderAdminPage(rows: PendingDto[], username: string, logoutPath
   .cancel-edit{background:#3d3d3d;color:#bbb}
   #new-sub-banner{background:#2a5a30;color:#d4ffd9;padding:10px 16px;text-align:center;cursor:pointer;font-size:14px;font-weight:600;border-radius:6px;margin-bottom:12px;display:none}
 </style></head><body>
+  <dialog id="crop-dialog">
+    <canvas id="crop-canvas"></canvas>
+    <div class="crop-footer">
+      <span class="crop-hint">Drag to select crop region</span>
+      <div style="display:flex;gap:8px">
+        <button onclick="applyCrop()" style="background:#2a5fa8;color:#e0ecff;padding:7px 16px;border:0;border-radius:6px;cursor:pointer;font-weight:600;font-family:inherit">Apply Crop</button>
+        <button onclick="document.getElementById('crop-dialog').close()" style="background:#444;color:#ccc;padding:7px 16px;border:0;border-radius:6px;cursor:pointer;font-weight:600;font-family:inherit">Cancel</button>
+      </div>
+    </div>
+  </dialog>
   <div id="new-sub-banner" onclick="location.reload()">New submission received — click to refresh</div>
   <header>
     <h1>Pending submissions <span class="who">— ${esc(username)}</span></h1>
@@ -187,6 +204,60 @@ async function saveEdit(btn){
     result.hidden=false; result.className='result err'; result.textContent=String(err.message||err);
     ef.querySelectorAll('button').forEach(b=>b.disabled=false);
   }
+}
+let _cropId=null,_cropImg=null,_cropStart=null,_cropEnd=null,_dragging=false;
+function openCrop(btn){
+  const card=btn.closest('.card');
+  const ss=card.dataset.screenshot; if(!ss) return;
+  _cropId=card.dataset.id; _cropStart=_cropEnd=null;
+  const canvas=document.getElementById('crop-canvas');
+  _cropImg=new Image();
+  _cropImg.onload=()=>{
+    canvas.width=_cropImg.naturalWidth; canvas.height=_cropImg.naturalHeight;
+    canvas.getContext('2d').drawImage(_cropImg,0,0);
+  };
+  _cropImg.src=ss;
+  document.getElementById('crop-dialog').showModal();
+}
+function _cpPos(e){
+  const c=document.getElementById('crop-canvas'),r=c.getBoundingClientRect();
+  return {x:Math.round((e.clientX-r.left)*c.width/r.width),y:Math.round((e.clientY-r.top)*c.height/r.height)};
+}
+function _drawCrop(){
+  const c=document.getElementById('crop-canvas'),ctx=c.getContext('2d');
+  ctx.drawImage(_cropImg,0,0);
+  if(!_cropStart||!_cropEnd) return;
+  const x=Math.min(_cropStart.x,_cropEnd.x),y=Math.min(_cropStart.y,_cropEnd.y);
+  const w=Math.abs(_cropEnd.x-_cropStart.x),h=Math.abs(_cropEnd.y-_cropStart.y);
+  ctx.fillStyle='rgba(0,0,0,.55)'; ctx.fillRect(0,0,c.width,c.height);
+  ctx.drawImage(_cropImg,x,y,w,h,x,y,w,h);
+  ctx.strokeStyle='#fff'; ctx.lineWidth=2; ctx.strokeRect(x,y,w,h);
+}
+(function(){
+  const c=document.getElementById('crop-canvas');
+  c.addEventListener('mousedown',e=>{_dragging=true;_cropStart=_cpPos(e);_cropEnd={..._cropStart};_drawCrop();});
+  c.addEventListener('mousemove',e=>{if(_dragging){_cropEnd=_cpPos(e);_drawCrop();}});
+  c.addEventListener('mouseup',  e=>{_dragging=false;_cropEnd=_cpPos(e);_drawCrop();});
+  document.getElementById('crop-dialog').addEventListener('click',function(e){if(e.target===this)this.close();});
+})();
+async function applyCrop(){
+  if(!_cropStart||!_cropEnd) return;
+  const c=document.getElementById('crop-canvas');
+  const x=Math.min(_cropStart.x,_cropEnd.x),y=Math.min(_cropStart.y,_cropEnd.y);
+  const w=Math.abs(_cropEnd.x-_cropStart.x),h=Math.abs(_cropEnd.y-_cropStart.y);
+  if(w<5||h<5) return;
+  const res=await fetch('/api/admin/'+_cropId+'/crop',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({left:x/c.width,top:y/c.height,right:(x+w)/c.width,bottom:(y+h)/c.height})});
+  if(!res.ok){const d=await res.json().catch(()=>({}));alert(d.error||'Crop failed');return;}
+  const d=await res.json();
+  const card=document.querySelector('.card[data-id="'+_cropId+'"]');
+  if(card&&d.screenshot){
+    card.dataset.screenshot=d.screenshot;
+    const img=card.querySelector('img.thumb'); if(img) img.src=d.screenshot+'?t='+Date.now();
+    const a=card.querySelector('a[href]'); if(a&&a.contains(img)) a.href=d.screenshot;
+    const ef=card.querySelector('.edit-form'); if(ef){ef.dataset.built='';ef.innerHTML='';}
+  }
+  document.getElementById('crop-dialog').close();
 }
 </script>
 </body></html>`;

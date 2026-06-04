@@ -1,12 +1,13 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import type { FastifyInstance } from 'fastify';
+import { compressImage, cropImage } from '../imageProcess';
 import { getById, listByStatus, queries, uploadsDir, type SubmissionRow } from '../db';
 import { getHandler } from '../handlers/registry';
 import type { AuthProvider } from '../auth';
 import { renderAdminPage } from '../admin/page';
 import { notify } from '../notify';
-import { addSseClient, removeSseClient } from '../sse';
+import { addSseClient, removeSseClient, broadcastSse } from '../sse';
 
 const MIME_BY_EXT: Record<string, string> = {
   png: 'image/png',
@@ -102,6 +103,7 @@ export async function registerAdminRoutes(app: FastifyInstance, auth: AuthProvid
         });
         req.log.info({ id, ref }, 'submission pushed');
         notify('submission.approved', { id: row.id, type: row.type, summary: row.summary, submitterNote: row.submitter_note, createdAt: row.created_at });
+        broadcastSse('submission', { id, action: 'approved' });
         return { ok: true, pushed_ref: ref };
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
@@ -125,7 +127,6 @@ export async function registerAdminRoutes(app: FastifyInstance, auth: AuthProvid
 
       let payloadStr = '';
       let newFileBuf: Buffer | null = null;
-      let newFileExt = '';
       let clearScreenshot = false;
 
       for await (const part of req.parts()) {
@@ -133,7 +134,7 @@ export async function registerAdminRoutes(app: FastifyInstance, auth: AuthProvid
           if (part.fieldname === 'screenshot') {
             const ext = IMAGE_EXT[part.mimetype];
             const buf = await part.toBuffer();
-            if (ext && buf.length > 0) { newFileBuf = buf; newFileExt = ext; }
+            if (ext && buf.length > 0) { newFileBuf = buf; }
           } else {
             await part.toBuffer();
           }
@@ -156,8 +157,9 @@ export async function registerAdminRoutes(app: FastifyInstance, auth: AuthProvid
           const oldPath = path.join(uploadsDir, row.screenshot);
           if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
         }
-        screenshot = `${id}.${newFileExt}`;
-        fs.writeFileSync(path.join(uploadsDir, screenshot), newFileBuf);
+        const compressed = await compressImage(newFileBuf);
+        screenshot = `${id}.${compressed.ext}`;
+        fs.writeFileSync(path.join(uploadsDir, screenshot), compressed.data);
       } else if (clearScreenshot && row.screenshot) {
         const oldPath = path.join(uploadsDir, row.screenshot);
         if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
@@ -166,7 +168,28 @@ export async function registerAdminRoutes(app: FastifyInstance, auth: AuthProvid
 
       queries.update.run({ id, payload: JSON.stringify(payload), summary, screenshot });
       req.log.info({ id }, 'submission edited');
+      broadcastSse('submission', { id, action: 'edited' });
       return { ok: true, summary };
+    });
+
+    // Crop → re-encode the stored screenshot to the given region.
+    admin.post<{ Params: { id: string } }>('/api/admin/:id/crop', async (req, reply) => {
+      const { id } = req.params;
+      const row = getById(id);
+      if (!row) return reply.code(404).send({ error: 'not found' });
+      if (!row.screenshot) return reply.code(400).send({ error: 'no screenshot' });
+
+      const { left, top, right, bottom } = req.body as { left: number; top: number; right: number; bottom: number };
+      const imgPath = path.join(uploadsDir, row.screenshot);
+      const { data, ext } = await cropImage(fs.readFileSync(imgPath), { left, top, right, bottom });
+
+      const newFilename = `${id}.${ext}`;
+      fs.writeFileSync(path.join(uploadsDir, newFilename), data);
+      if (row.screenshot !== newFilename) fs.unlinkSync(imgPath);
+
+      queries.update.run({ id, payload: row.payload, summary: row.summary, screenshot: newFilename });
+      req.log.info({ id }, 'screenshot cropped');
+      return { ok: true, screenshot: `/api/admin/uploads/${newFilename}` };
     });
 
     // Reject → mark rejected with an optional note.
@@ -179,6 +202,7 @@ export async function registerAdminRoutes(app: FastifyInstance, auth: AuthProvid
         id, status: 'rejected', reviewer_note: note, reviewed_at: new Date().toISOString(), pushed_ref: null,
       });
       notify('submission.rejected', { id, type: row.type, summary: row.summary, submitterNote: row.submitter_note, createdAt: row.created_at });
+      broadcastSse('submission', { id, action: 'rejected' });
       return { ok: true };
     });
   });

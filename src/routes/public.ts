@@ -8,6 +8,7 @@ import { queries, uploadsDir } from '../db';
 import { getHandler, listHandlers } from '../handlers/registry';
 import { notify } from '../notify';
 import { broadcastSse } from '../sse';
+import { compressImage } from '../imageProcess';
 
 // Tables exposed via the public export API. Slugs become URL path segments and
 // CSV filenames, so keep them lowercase and URL-safe.
@@ -67,7 +68,6 @@ export async function registerPublicRoutes(app: FastifyInstance) {
       let payloadStr = '';
       let honeypot = '';
       let fileBuf: Buffer | null = null;
-      let fileExt = '';
 
       try {
         for await (const part of req.parts()) {
@@ -77,7 +77,6 @@ export async function registerPublicRoutes(app: FastifyInstance) {
               const buf = await part.toBuffer();
               if (ext && buf.length > 0) {
                 fileBuf = buf;
-                fileExt = ext;
               }
             } else {
               await part.toBuffer(); // drain unexpected files
@@ -118,8 +117,9 @@ export async function registerPublicRoutes(app: FastifyInstance) {
       const id = randomUUID();
       let screenshot: string | null = null;
       if (fileBuf && handler.acceptsScreenshot) {
-        screenshot = `${id}.${fileExt}`;
-        fs.writeFileSync(path.join(uploadsDir, screenshot), fileBuf);
+        const compressed = await compressImage(fileBuf);
+        screenshot = `${id}.${compressed.ext}`;
+        fs.writeFileSync(path.join(uploadsDir, screenshot), compressed.data);
       }
 
       // Surface the attribution link (if any) in the review note column.

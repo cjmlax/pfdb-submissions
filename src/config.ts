@@ -59,6 +59,10 @@ export const config = {
     maxBytes: Number(opt('UPLOAD_MAX_BYTES', String(5 * 1024 * 1024))),
   },
 
+  image: {
+    quality: Number(opt('IMAGE_QUALITY', '80')),
+  },
+
   export: {
     hashRefreshCron: opt('EXPORT_HASH_CRON', '0 0 * * *'),
   },
