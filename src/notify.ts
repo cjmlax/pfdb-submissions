@@ -48,11 +48,10 @@ export function notify(event: NotifyEvent, sub: SubmissionInfo): void {
 
     const { actionSecret } = config.notify;
     if (event === 'submission.created' && adminUrl && actionSecret) {
-      const base = `${adminUrl}/api/action/${sub.id}`;
-      const auth = `headers.Authorization=Bearer ${actionSecret}`;
+      const base = `${adminUrl}/api/action/${actionSecret}/${sub.id}`;
       headers['X-Actions'] = [
-        `http, Approve, ${base}/approve, method=POST, ${auth}`,
-        `http, Reject,  ${base}/reject,  method=POST, ${auth}`,
+        `http, Approve, ${base}/approve, method=POST`,
+        `http, Reject,  ${base}/reject,  method=POST`,
       ].join('; ');
     }
     if (url.username) {

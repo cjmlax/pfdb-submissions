@@ -8,12 +8,12 @@ import { notify } from '../notify';
 export async function registerActionRoutes(app: FastifyInstance) {
   if (!config.notify.actionSecret) return;
 
-  function checkBearer(authHeader: string | undefined): boolean {
-    return authHeader === `Bearer ${config.notify.actionSecret}`;
+  function checkToken(token: string): boolean {
+    return token === config.notify.actionSecret;
   }
 
-  app.post<{ Params: { id: string } }>('/api/action/:id/approve', async (req, reply) => {
-    if (!checkBearer(req.headers.authorization)) return reply.code(401).send({ error: 'unauthorized' });
+  app.post<{ Params: { token: string; id: string } }>('/api/action/:token/:id/approve', async (req, reply) => {
+    if (!checkToken(req.params.token)) return reply.code(401).send({ error: 'unauthorized' });
 
     const row = getById(req.params.id);
     if (!row) return reply.code(404).send({ error: 'not found' });
@@ -38,8 +38,8 @@ export async function registerActionRoutes(app: FastifyInstance) {
     }
   });
 
-  app.post<{ Params: { id: string } }>('/api/action/:id/reject', async (req, reply) => {
-    if (!checkBearer(req.headers.authorization)) return reply.code(401).send({ error: 'unauthorized' });
+  app.post<{ Params: { token: string; id: string } }>('/api/action/:token/:id/reject', async (req, reply) => {
+    if (!checkToken(req.params.token)) return reply.code(401).send({ error: 'unauthorized' });
 
     const row = getById(req.params.id);
     if (!row) return reply.code(404).send({ error: 'not found' });
