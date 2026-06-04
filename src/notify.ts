@@ -46,10 +46,19 @@ export function notify(event: NotifyEvent, sub: SubmissionInfo): void {
   };
   if (adminUrl) payload.click = `${adminUrl}/api/admin/`;
 
-  for (const url of webhookUrls) {
-    fetch(url, {
+  for (const rawUrl of webhookUrls) {
+    const url = new URL(rawUrl);
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+
+    if (url.username) {
+      headers['Authorization'] = `Basic ${btoa(`${url.username}:${url.password}`)}`;
+      url.username = '';
+      url.password = '';
+    }
+
+    fetch(url.toString(), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(payload),
     }).catch((err: Error) => {
       console.error(`[notify] webhook to ${url} failed: ${err.message}`);
