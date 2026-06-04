@@ -17,7 +17,7 @@ const EXPORT_TABLES: Record<string, { label: string; tableId: string }> = {
   breeds: { label: 'Breeds',       tableId: config.teable.tables.breeds },
   chroma: { label: 'Chroma Combos', tableId: config.teable.tables.chroma },
   glass:  { label: 'Glass Combos',  tableId: config.teable.tables.glass  },
-  sets:   { label: 'Weekly Sets', tableId: config.teable.tables.sets},
+  weekly:   { label: 'Weekly Sets', tableId: config.teable.tables.weekly},
 };
 
 // Persistent export state: hash + timestamp for each table, survives restarts.
