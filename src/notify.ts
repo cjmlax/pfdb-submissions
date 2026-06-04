@@ -46,14 +46,6 @@ export function notify(event: NotifyEvent, sub: SubmissionInfo): void {
 
     if (adminUrl) headers['X-Click'] = `${adminUrl}/api/admin/`;
 
-    const { actionSecret } = config.notify;
-    if (event === 'submission.created' && adminUrl && actionSecret) {
-      const base = `${adminUrl}/api/action/${actionSecret}/${sub.id}`;
-      headers['X-Actions'] = [
-        `http, Approve, ${base}/approve, method=POST`,
-        `http, Reject,  ${base}/reject,  method=POST`,
-      ].join('; ');
-    }
     if (url.username) {
       headers['Authorization'] = `Basic ${btoa(`${url.username}:${url.password}`)}`;
       url.username = '';

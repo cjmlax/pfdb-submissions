@@ -12,6 +12,19 @@ export async function registerActionRoutes(app: FastifyInstance) {
     return token === config.notify.actionSecret;
   }
 
+  // Allow cross-origin requests from ntfy (token in URL provides auth).
+  app.addHook('onSend', async (_req, reply) => {
+    reply.header('Access-Control-Allow-Origin', '*');
+  });
+  app.options('/api/action/*', async (_req, reply) => {
+    reply
+      .header('Access-Control-Allow-Origin', '*')
+      .header('Access-Control-Allow-Methods', 'POST')
+      .header('Access-Control-Allow-Headers', 'Content-Type')
+      .code(204)
+      .send();
+  });
+
   app.post<{ Params: { token: string; id: string } }>('/api/action/:token/:id/approve', async (req, reply) => {
     if (!checkToken(req.params.token)) return reply.code(401).send({ error: 'unauthorized' });
 

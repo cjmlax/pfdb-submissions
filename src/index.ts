@@ -8,7 +8,6 @@ import { config } from './config';
 import { getAuthProvider } from './auth';
 import { registerPublicRoutes } from './routes/public';
 import { registerAdminRoutes } from './routes/admin';
-import { registerActionRoutes } from './routes/actions';
 
 async function main() {
   const app = Fastify({
@@ -32,7 +31,6 @@ async function main() {
 
   await registerPublicRoutes(app);
   await registerAdminRoutes(app, auth);
-  await registerActionRoutes(app);
 
   await app.listen({ port: config.port, host: config.host });
   app.log.info(
