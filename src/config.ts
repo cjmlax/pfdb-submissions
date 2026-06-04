@@ -51,7 +51,7 @@ export const config = {
       breeds: opt('BREEDS_TABLE_ID', 'tbliUWaVe4eKqJkVEv4'),
       chroma: opt('CHROMA_TABLE_ID', 'tbluqJI6VaHK0fWiPo6'),
       glass:  opt('GLASS_TABLE_ID',  'tblaToM9WCudYNtRjaV'),
-      sets:   opt('SETS_TABLE_ID',   'tblOuIZRVGlTPLAfM56'),
+      weekly:   opt('WEEKLY_TABLE_ID',   'tblOuIZRVGlTPLAfM56'),
     },
   },
 
