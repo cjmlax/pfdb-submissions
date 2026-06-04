@@ -185,6 +185,23 @@ export async function registerPublicRoutes(app: FastifyInstance) {
     }),
   );
 
+  // Triggers a server-side hash refresh for all tables and returns the updated list.
+  // Rate-limited aggressively since each call fetches all tables from Teable.
+  app.post(
+    '/api/export/refresh',
+    { config: { rateLimit: { max: 5, timeWindow: '1 hour' } } },
+    async (_req, reply) => {
+      if (!config.teable.token) {
+        return reply.code(503).send({ error: 'Export unavailable' });
+      }
+      await refreshHashes();
+      return Object.entries(EXPORT_TABLES).map(([slug, { label }]) => {
+        const entry = exportState.get(slug);
+        return { slug, label, hash: entry?.hash ?? null, exportedAt: entry?.exportedAt ?? null };
+      });
+    },
+  );
+
   // Streams a live CSV export from Teable for the requested table. Rate-limited
   // per IP to prevent hammering the database. Returns JSON errors on failure so
   // the client can always distinguish a bad response from a partial download.
