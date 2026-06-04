@@ -37,18 +37,16 @@ export function notify(event: NotifyEvent, sub: SubmissionInfo): void {
   const messageLines = [sub.summary];
   if (sub.submitterNote) messageLines.push(`Note: ${sub.submitterNote}`);
 
-  const payload: Record<string, unknown> = {
-    title:    meta.title(label),
-    message:  messageLines.join('\n'),
-    priority: meta.priority,
-    tags:     meta.tags,
-  };
-  if (adminUrl) payload.click = `${adminUrl}/api/admin/`;
-
   for (const rawUrl of webhookUrls) {
     const url = new URL(rawUrl);
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    const headers: Record<string, string> = {
+      'Content-Type': 'text/plain',
+      'X-Title':      meta.title(label),
+      'X-Priority':   String(meta.priority),
+      'X-Tags':       meta.tags.join(','),
+    };
 
+    if (adminUrl) headers['X-Click'] = `${adminUrl}/api/admin/`;
     if (url.username) {
       headers['Authorization'] = `Basic ${btoa(`${url.username}:${url.password}`)}`;
       url.username = '';
@@ -58,7 +56,7 @@ export function notify(event: NotifyEvent, sub: SubmissionInfo): void {
     fetch(url.toString(), {
       method: 'POST',
       headers,
-      body: JSON.stringify(payload),
+      body: messageLines.join('\n'),
     }).catch((err: Error) => {
       console.error(`[notify] webhook to ${url} failed: ${err.message}`);
     });
