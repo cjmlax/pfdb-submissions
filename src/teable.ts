@@ -75,6 +75,24 @@ export async function teableUploadAttachmentToRecord(
   }
 }
 
+// Finds the current maximum numeric value of a field across all records in a table.
+// Used to compute the next sequential value (max + 1) before creating a new record.
+export async function teableGetMaxNumber(tableId: string, fieldId: string): Promise<number> {
+  const url = `${config.teable.baseUrl}/api/table/${tableId}/record?fieldKeyType=id&take=1000`;
+  const res = await fetch(url, { headers: authHeader() });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Teable record query failed (${res.status}): ${text.slice(0, 300)}`);
+  }
+  const data = (await res.json()) as { records?: { fields?: Record<string, unknown> }[] };
+  let max = 0;
+  for (const rec of data.records ?? []) {
+    const val = rec.fields?.[fieldId];
+    if (typeof val === 'number' && val > max) max = val;
+  }
+  return max;
+}
+
 // Creates a record using field IDs (fieldKeyType: 'id'), so the keys are not
 // sensitive to display-name renames. Returns the new record id.
 export async function teableCreateRecordById(

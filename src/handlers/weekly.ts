@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { SubmissionHandler } from '../types';
-import { resolveFieldId, teableCreateRecordById } from '../teable';
+import { resolveFieldId, teableCreateRecordById, teableGetMaxNumber } from '../teable';
 import { config } from '../config';
 
 // Mirrors getCurrentISOWeek() on the frontend. Calculated at approval time so
@@ -31,7 +31,8 @@ const FROG_SLOTS = ['NameA', 'NameB', 'NameC', 'NameD', 'NameE', 'NameF', 'NameG
 
 // SetDate field ID (fld0g2OJuIM4fScLjfS) is hardcoded since we write via
 // fieldKeyType=id and we know the ID won't change even if the display name does.
-const SET_DATE_FIELD_ID = 'fld0g2OJuIM4fScLjfS';
+const SET_DATE_FIELD_ID  = 'fld0g2OJuIM4fScLjfS';
+const SET_CHRON_FIELD_ID = 'fldaGzZa0KXnxP6HHYm';
 
 export const weeklySchema = z.object({
   setName: z.string().min(1).max(120),
@@ -49,11 +50,13 @@ export const weeklyHandler: SubmissionHandler<WeeklyPayload> = {
     `${p.setName} — ${p.frogs.length} frog${p.frogs.length !== 1 ? 's' : ''}, ${p.reward} stamps`,
 
   async pushDown(p) {
-    const tableId = config.teable.tables.weekly;
+    const tableId  = config.teable.tables.weekly;
+    const nextChron = (await teableGetMaxNumber(tableId, SET_CHRON_FIELD_ID)) + 1;
     const fields: Record<string, unknown> = {
       [await resolveFieldId(tableId, { name: 'SetName' })]: p.setName,
       [await resolveFieldId(tableId, { name: 'Stamp'   })]: p.reward,
-      [SET_DATE_FIELD_ID]: getCurrentISOWeek(),
+      [SET_DATE_FIELD_ID]:  getCurrentISOWeek(),
+      [SET_CHRON_FIELD_ID]: nextChron,
     };
     for (let i = 0; i < p.frogs.length; i++) {
       fields[await resolveFieldId(tableId, { name: FROG_SLOTS[i] })] = p.frogs[i];
