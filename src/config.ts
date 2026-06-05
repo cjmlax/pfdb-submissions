@@ -67,6 +67,13 @@ export const config = {
     hashRefreshCron: opt('EXPORT_HASH_CRON', '0 0 * * *'),
   },
 
+  changelog: {
+    // Absolute path to changelog.json in the web root (SMB build output).
+    // Leave empty to disable the iTunes poller.
+    path: opt('CHANGELOG_PATH', ''),
+    pollCron: opt('CHANGELOG_POLL_CRON', '0 6 * * *'), // daily at 6 AM
+  },
+
   notify: {
     webhookUrls: opt('WEBHOOK_URL', '').split(',').map((s) => s.trim()).filter(Boolean),
     adminUrl: opt('ADMIN_URL', '').replace(/\/$/, ''),
