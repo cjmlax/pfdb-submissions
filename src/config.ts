@@ -74,6 +74,10 @@ export const config = {
     pollCron: opt('CHANGELOG_POLL_CRON', '0 6 * * *'), // daily at 6 AM
   },
 
+  weeklySets: {
+    pollCron: opt('WEEKLY_SETS_POLL_CRON', '2 14 * * 1'), // Mondays at 2:02 PM ET
+  },
+
   notify: {
     webhookUrls: opt('WEBHOOK_URL', '').split(',').map((s) => s.trim()).filter(Boolean),
     adminUrl: opt('ADMIN_URL', '').replace(/\/$/, ''),

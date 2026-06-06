@@ -9,6 +9,7 @@ import { getAuthProvider } from './auth';
 import { registerPublicRoutes } from './routes/public';
 import { registerAdminRoutes } from './routes/admin';
 import { registerItunesPoller } from './tasks/itunesPoller';
+import { registerWeeklySetsPoller } from './tasks/weeklySetsPoller';
 
 async function main() {
   const app = Fastify({
@@ -38,6 +39,7 @@ async function main() {
     `pfdb-submissions up — auth=${config.auth.mode}, data=${config.dataDir}, origins=${config.allowedOrigin.join(',')}`,
   );
   registerItunesPoller(app.log);
+  registerWeeklySetsPoller(app.log);
 }
 
 main().catch((err) => {

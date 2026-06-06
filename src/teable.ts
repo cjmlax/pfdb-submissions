@@ -111,6 +111,34 @@ export async function teableGetMaxNumber(tableId: string, fieldId: string): Prom
   return max;
 }
 
+// Fetches all records in a table (paginated) and returns a Map of one field's
+// string value to the Teable record ID. Useful for building lookup indexes.
+export async function teableBuildLookupMap(
+  tableId: string,
+  valueFieldId: string,
+): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  let offset = 0;
+  const take = 1000;
+  while (true) {
+    const url = `${config.teable.baseUrl}/api/table/${tableId}/record?fieldKeyType=id&take=${take}&skip=${offset}`;
+    const res = await fetch(url, { headers: authHeader() });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`Teable record fetch failed (${res.status}): ${text.slice(0, 300)}`);
+    }
+    const data = (await res.json()) as { records?: { id: string; fields?: Record<string, unknown> }[] };
+    const records = data.records ?? [];
+    for (const rec of records) {
+      const val = rec.fields?.[valueFieldId];
+      if (typeof val === 'string' && val) map.set(val, rec.id);
+    }
+    if (records.length < take) break;
+    offset += take;
+  }
+  return map;
+}
+
 // Creates a record using field IDs (fieldKeyType: 'id'), so the keys are not
 // sensitive to display-name renames. Returns the new record id.
 export async function teableCreateRecordById(
