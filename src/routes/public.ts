@@ -2,7 +2,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs';
 import { schedule as cronSchedule } from 'node-cron';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { config } from '../config';
 import { queries, uploadsDir } from '../db';
 import { getHandler, listHandlers } from '../handlers/registry';
@@ -210,9 +210,51 @@ export async function registerPublicRoutes(app: FastifyInstance) {
     },
   );
 
-  // Streams a live CSV export from Teable for the requested table. Rate-limited
-  // per IP to prevent hammering the database. Returns JSON errors on failure so
-  // the client can always distinguish a bad response from a partial download.
+  // Fetches a CSV from Teable, updates the cached hash, and sends it to the client.
+  async function serveExportCsv(
+    table: string,
+    entry: { label: string; tableId: string },
+    req: FastifyRequest,
+    reply: FastifyReply,
+  ) {
+    if (!config.teable.token) {
+      return reply.code(503).send({ error: 'Export unavailable' });
+    }
+
+    const exportUrl = `${config.teable.baseUrl}/api/export/${entry.tableId}`;
+    let upstream: Response;
+    try {
+      upstream = await fetch(exportUrl, {
+        headers: { Authorization: `Bearer ${config.teable.token}` },
+      });
+    } catch {
+      req.log.warn({ table }, 'could not reach Teable for export');
+      return reply.code(502).send({ error: 'Could not reach the database. Please try again.' });
+    }
+
+    if (!upstream.ok || !upstream.body) {
+      req.log.warn({ table, status: upstream.status }, 'Teable export failed');
+      return reply.code(502).send({ error: 'Export unavailable. Please try again later.' });
+    }
+
+    const bytes = await upstream.arrayBuffer();
+    const buf = Buffer.from(bytes);
+    const hash = createHash('sha256').update(buf).digest('hex').slice(0, 8);
+    const exportedAt = new Date().toISOString();
+    exportState.set(table, { hash, exportedAt });
+    saveState(exportState);
+
+    const date = exportedAt.slice(0, 10);
+    reply.header('Content-Type', 'text/csv; charset=utf-8');
+    reply.header('Content-Disposition', `attachment; filename="${table}-${date}-${hash}.csv"`);
+    reply.header('Cache-Control', 'no-store');
+    return reply.send(buf);
+  }
+
+  // Redirects to the versioned URL so the filename is visible in the URL path.
+  // Browsers save using the last path segment; fetch() clients can read response.url
+  // to get the filename without needing Content-Disposition exposed via CORS.
+  // Falls back to serving directly if no hash is cached yet (first boot).
   app.get<{ Params: { table: string } }>(
     '/api/export/:table',
     { config: { rateLimit: { max: 10, timeWindow: '15 minutes' } } },
@@ -221,38 +263,24 @@ export async function registerPublicRoutes(app: FastifyInstance) {
       const entry = EXPORT_TABLES[table];
       if (!entry) return reply.code(404).send({ error: 'Unknown table' });
 
-      if (!config.teable.token) {
-        return reply.code(503).send({ error: 'Export unavailable' });
+      const state = exportState.get(table);
+      if (state) {
+        const date = state.exportedAt.slice(0, 10);
+        return reply.redirect(`/api/export/${table}/${table}-${date}-${state.hash}.csv`);
       }
+      return serveExportCsv(table, entry, req, reply);
+    },
+  );
 
-      const exportUrl = `${config.teable.baseUrl}/api/export/${entry.tableId}`;
-      let upstream: Response;
-      try {
-        upstream = await fetch(exportUrl, {
-          headers: { Authorization: `Bearer ${config.teable.token}` },
-        });
-      } catch {
-        req.log.warn({ table }, 'could not reach Teable for export');
-        return reply.code(502).send({ error: 'Could not reach the database. Please try again.' });
-      }
-
-      if (!upstream.ok || !upstream.body) {
-        req.log.warn({ table, status: upstream.status }, 'Teable export failed');
-        return reply.code(502).send({ error: 'Export unavailable. Please try again later.' });
-      }
-
-      const bytes = await upstream.arrayBuffer();
-      const buf = Buffer.from(bytes);
-      const hash = createHash('sha256').update(buf).digest('hex').slice(0, 8);
-      const exportedAt = new Date().toISOString();
-      exportState.set(table, { hash, exportedAt });
-      saveState(exportState);
-
-      const date = exportedAt.slice(0, 10);
-      reply.header('Content-Type', 'text/csv; charset=utf-8');
-      reply.header('Content-Disposition', `attachment; filename="${table}-${date}-${hash}.csv"`);
-      reply.header('Cache-Control', 'no-store');
-      return reply.send(buf);
+  // Actual download — :filename is purely a hint for the browser's save dialog.
+  app.get<{ Params: { table: string; filename: string } }>(
+    '/api/export/:table/:filename',
+    { config: { rateLimit: { max: 10, timeWindow: '15 minutes' } } },
+    async (req, reply) => {
+      const { table } = req.params;
+      const entry = EXPORT_TABLES[table];
+      if (!entry) return reply.code(404).send({ error: 'Unknown table' });
+      return serveExportCsv(table, entry, req, reply);
     },
   );
 }
