@@ -24,7 +24,6 @@ async function main() {
   await app.register(cors, {
     origin: config.allowedOrigin.includes('*') ? true : config.allowedOrigin,
     methods: ['GET', 'POST'],
-    exposedHeaders: ['Content-Disposition'],
   });
 
   app.get('/healthz', async () => ({ ok: true, mode: config.auth.mode }));
