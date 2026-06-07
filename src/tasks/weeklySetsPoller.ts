@@ -8,7 +8,7 @@ import {
   teableBuildLookupMap,
 } from '../teable';
 
-const SETS_URL = 'https://nimblebit.com/sets/txt';
+const SETS_URL = 'https://nimbelbit.com/sets.txt';
 
 const FROGS_TABLE_ID     = 'tblgaaUnZGx1i61RCOZ';
 const FROG_READABLE_FIELD = 'fldYaxw2QNksOM7x79k'; // formula: "Base Secondary Breed"
