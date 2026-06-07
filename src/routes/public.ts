@@ -5,6 +5,8 @@ import { schedule as cronSchedule } from 'node-cron';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { config } from '../config';
 import { queries, uploadsDir } from '../db';
+import { requireUser } from '../userAuth';
+import { upsertUser, setFlair, getProfile } from '../users';
 import { getHandler, listHandlers } from '../handlers/registry';
 import { notify } from '../notify';
 import { broadcastSse } from '../sse';
@@ -53,6 +55,27 @@ export async function registerPublicRoutes(app: FastifyInstance) {
   // Advertises the accepted submission types (handy for the website / debugging).
   app.get('/api/types', async () =>
     listHandlers().map((h) => ({ type: h.type, label: h.label, acceptsScreenshot: !!h.acceptsScreenshot })),
+  );
+
+  // The signed-in user's own profile. Records/refreshes the user on every call
+  // (so the directory builds itself as people sign in) and returns their badges.
+  app.get('/api/me', { preHandler: requireUser }, async (req) => {
+    const { sub, username } = req.user!;
+    upsertUser(sub, username);
+    return getProfile(sub);
+  });
+
+  // Lets a user set their own flair (a short tagline). Capped and trimmed.
+  app.patch<{ Body: { flair?: string | null } }>(
+    '/api/me',
+    { preHandler: requireUser },
+    async (req) => {
+      const { sub, username } = req.user!;
+      upsertUser(sub, username);
+      const raw = typeof req.body?.flair === 'string' ? req.body.flair.trim().slice(0, 80) : '';
+      setFlair(sub, raw || null);
+      return getProfile(sub);
+    },
   );
 
   // Public submission endpoint. Accepts multipart/form-data with fields:

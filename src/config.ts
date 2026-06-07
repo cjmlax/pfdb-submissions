@@ -43,6 +43,15 @@ export const config = {
     },
   },
 
+  // Verification config for tokens issued to the public SPA. This is a separate
+  // Authentik application from the admin OIDC above. These are public values
+  // (the client id is not a secret), so the defaults are safe to ship.
+  userAuth: {
+    issuer:      opt('USER_OIDC_ISSUER', 'https://authentik.cjmlax.com/application/o/pfdb/'),
+    clientId:    opt('USER_OIDC_CLIENT_ID', 'gYpSjz6qGj1e1HUPihJeMt9aTP9I0ymgA877eScc'),
+    groupsClaim: opt('USER_OIDC_GROUPS_CLAIM', 'pfdb_groups'),
+  },
+
   teable: {
     baseUrl: opt('TEABLE_BASE_URL', 'https://teable.cjmlax.com').replace(/\/$/, ''),
     token: opt('TEABLE_TOKEN', ''),

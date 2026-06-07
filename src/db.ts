@@ -25,6 +25,7 @@ fs.mkdirSync(uploadsDir, { recursive: true });
 
 export const db = new Database(path.join(config.dataDir, 'submissions.db'));
 db.pragma('journal_mode = WAL');
+db.pragma('foreign_keys = ON'); // enforce FK constraints (used by the users/badges tables)
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS submissions (

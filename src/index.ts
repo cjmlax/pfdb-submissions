@@ -23,7 +23,7 @@ async function main() {
   await app.register(rateLimit, { max: 100, timeWindow: '1 minute' });
   await app.register(cors, {
     origin: config.allowedOrigin.includes('*') ? true : config.allowedOrigin,
-    methods: ['GET', 'POST'],
+    methods: ['GET', 'POST', 'PATCH', 'DELETE'],
   });
 
   app.get('/healthz', async () => ({ ok: true, mode: config.auth.mode }));
