@@ -56,6 +56,15 @@ const submissionCols = new Set(
 if (!submissionCols.has('submitter_sub'))  db.exec(`ALTER TABLE submissions ADD COLUMN submitter_sub TEXT`);
 if (!submissionCols.has('submitter_name')) db.exec(`ALTER TABLE submissions ADD COLUMN submitter_name TEXT`);
 
+// Rejected submissions are no longer retained — purge any left by older versions
+// (and their screenshot files) so the table only holds live/approved records.
+for (const r of db.prepare(`SELECT screenshot FROM submissions WHERE status = 'rejected'`).all() as { screenshot: string | null }[]) {
+  if (r.screenshot) {
+    try { fs.unlinkSync(path.join(uploadsDir, r.screenshot)); } catch { /* already gone */ }
+  }
+}
+db.exec(`DELETE FROM submissions WHERE status = 'rejected'`);
+
 export const queries = {
   insert: db.prepare(`
     INSERT INTO submissions
@@ -82,6 +91,7 @@ export const queries = {
      WHERE id = @id
        AND status = 'pending'
   `),
+  deleteById: db.prepare(`DELETE FROM submissions WHERE id = ?`),
 };
 
 export function getById(id: string): SubmissionRow | undefined {
@@ -94,4 +104,8 @@ export function listByStatus(status: Status): SubmissionRow[] {
 
 export function listBySubmitter(sub: string): SubmissionRow[] {
   return queries.listBySubmitter.all(sub) as SubmissionRow[];
+}
+
+export function deleteById(id: string): void {
+  queries.deleteById.run(id);
 }

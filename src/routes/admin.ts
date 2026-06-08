@@ -2,7 +2,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import type { FastifyInstance } from 'fastify';
 import { compressImage, cropImage } from '../imageProcess';
-import { getById, listByStatus, queries, uploadsDir, type SubmissionRow } from '../db';
+import { getById, listByStatus, queries, deleteById, uploadsDir, type SubmissionRow } from '../db';
 import { getHandler } from '../handlers/registry';
 import { requireUserAdmin } from '../userAuth';
 import { notify } from '../notify';
@@ -168,15 +168,19 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       return { ok: true, screenshot: `/api/admin/uploads/${newFilename}` };
     });
 
-    // Reject → mark rejected with an optional note.
+    // Reject → discard the submission entirely (row + screenshot). Rejected
+    // submissions are not retained.
     admin.post('/api/admin/:id/reject', async (req, reply) => {
       const id = (req.params as { id: string }).id;
       const row = getById(id);
       if (!row) return reply.code(404).send({ error: 'not found' });
-      const note = (req.body as { note?: string } | undefined)?.note ?? null;
-      queries.setStatus.run({
-        id, status: 'rejected', reviewer_note: note, reviewed_at: new Date().toISOString(), pushed_ref: null,
-      });
+
+      if (row.screenshot) {
+        const p = path.join(uploadsDir, row.screenshot);
+        if (fs.existsSync(p)) fs.unlinkSync(p);
+      }
+      deleteById(id);
+
       notify('submission.rejected', { id, type: row.type, summary: row.summary, submitterNote: row.submitter_note, createdAt: row.created_at });
       broadcastSse('submission', { id, action: 'rejected' });
       return { ok: true };
