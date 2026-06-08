@@ -8,6 +8,7 @@ import { config } from './config';
 import { getAuthProvider } from './auth';
 import { registerPublicRoutes } from './routes/public';
 import { registerAdminRoutes } from './routes/admin';
+import { registerAdminBadgeRoutes } from './routes/adminBadges';
 import { registerItunesPoller } from './tasks/itunesPoller';
 import { registerWeeklySetsPoller } from './tasks/weeklySetsPoller';
 
@@ -33,6 +34,7 @@ async function main() {
 
   await registerPublicRoutes(app);
   await registerAdminRoutes(app, auth);
+  await registerAdminBadgeRoutes(app, auth);
 
   await app.listen({ port: config.port, host: config.host });
   app.log.info(

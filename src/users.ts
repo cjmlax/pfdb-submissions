@@ -69,8 +69,9 @@ const stmts = {
       username  = excluded.username,
       last_seen = excluded.last_seen
   `),
-  getUser:  db.prepare(`SELECT * FROM users WHERE sub = ?`),
-  setFlair: db.prepare(`UPDATE users SET flair = @flair WHERE sub = @sub`),
+  getUser:   db.prepare(`SELECT * FROM users WHERE sub = ?`),
+  listUsers: db.prepare(`SELECT * FROM users ORDER BY last_seen DESC`),
+  setFlair:  db.prepare(`UPDATE users SET flair = @flair WHERE sub = @sub`),
 
   listBadges: db.prepare(`SELECT * FROM badges ORDER BY sort_order, name`),
   getBadge:   db.prepare(`SELECT * FROM badges WHERE id = ?`),
@@ -110,6 +111,12 @@ export function upsertUser(sub: string, username: string | null): void {
 
 export function getUser(sub: string): UserRow | undefined {
   return stmts.getUser.get(sub) as UserRow | undefined;
+}
+
+// Everyone who has signed in at least once, most-recently-seen first. Used by
+// the admin UI to pick who to award badges to.
+export function listUsers(): UserRow[] {
+  return stmts.listUsers.all() as UserRow[];
 }
 
 export function setFlair(sub: string, flair: string | null): void {
