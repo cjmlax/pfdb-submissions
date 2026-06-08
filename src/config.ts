@@ -7,11 +7,10 @@ function opt(name: string, def: string): string {
   return v === undefined || v === '' ? def : v;
 }
 
-export type AuthMode = 'forward' | 'oidc' | 'password';
-
-// All runtime configuration in one place. Required-at-use secrets (Teable token,
-// admin password, OIDC client secret) are read lazily so the worker can still
-// boot and serve /healthz with an incomplete config.
+// All runtime configuration in one place. Required-at-use secrets (Teable token)
+// are read lazily so the worker can still boot and serve /healthz with an
+// incomplete config. Admin auth is handled entirely by the SPA bearer token
+// (see userAuth below) — there is no cookie/session login.
 export const config = {
   port: Number(opt('PORT', '8080')),
   host: opt('HOST', '0.0.0.0'),
@@ -21,27 +20,9 @@ export const config = {
     .map((s) => s.trim())
     .filter(Boolean),
 
-  auth: {
-    mode: opt('AUTH_MODE', 'forward') as AuthMode,
-    adminGroup: opt('ADMIN_GROUP', 'pfdb-admin'),
-    // forward mode
-    userHeader: opt('FORWARD_USER_HEADER', 'x-authentik-username').toLowerCase(),
-    groupsHeader: opt('FORWARD_GROUPS_HEADER', 'x-authentik-groups').toLowerCase(),
-    proxySecret: opt('TRUST_PROXY_SECRET', ''),
-    // password mode
-    password: opt('ADMIN_PASSWORD', ''),
-    // shared
-    cookieSecret: opt('COOKIE_SECRET', 'insecure-dev-cookie-secret-change-me'),
-    // oidc mode
-    oidc: {
-      issuer: opt('OIDC_ISSUER', ''),
-      clientId: opt('OIDC_CLIENT_ID', ''),
-      clientSecret: opt('OIDC_CLIENT_SECRET', ''),
-      redirectUri: opt('OIDC_REDIRECT_URI', ''),
-      groupsClaim: opt('OIDC_GROUPS_CLAIM', 'groups'),
-      scope: opt('OIDC_SCOPE', 'openid profile email groups'),
-    },
-  },
+  // Salt for hashing submitter IPs (abuse tracking). Falls back to the old
+  // COOKIE_SECRET so existing deployments keep producing the same hashes.
+  ipHashSecret: opt('IP_HASH_SECRET', opt('COOKIE_SECRET', 'change-me-ip-salt')),
 
   // Verification config for tokens issued to the public SPA. This is a separate
   // Authentik application from the admin OIDC above. These are public values

@@ -4,10 +4,9 @@ import type { FastifyInstance } from 'fastify';
 import { compressImage, cropImage } from '../imageProcess';
 import { getById, listByStatus, queries, uploadsDir, type SubmissionRow } from '../db';
 import { getHandler } from '../handlers/registry';
-import type { AuthProvider } from '../auth';
-import { renderAdminPage } from '../admin/page';
+import { requireUserAdmin } from '../userAuth';
 import { notify } from '../notify';
-import { addSseClient, removeSseClient, broadcastSse } from '../sse';
+import { broadcastSse } from '../sse';
 
 const MIME_BY_EXT: Record<string, string> = {
   png: 'image/png',
@@ -36,45 +35,17 @@ function toDto(r: SubmissionRow) {
   };
 }
 
-export async function registerAdminRoutes(app: FastifyInstance, auth: AuthProvider) {
-  // Everything in this scope is gated by the chosen auth provider.
+// Submission review API. Gated by the SPA bearer-token admin check so the React
+// /admin pages drive it; the review UI itself now lives in the website.
+export async function registerAdminRoutes(app: FastifyInstance) {
   await app.register(async (admin) => {
-    admin.addHook('preHandler', auth.requireAdmin);
+    admin.addHook('preHandler', requireUserAdmin);
 
-    // Server-rendered review page.
-    admin.get('/api/admin/', async (req, reply) => {
-      const pending = listByStatus('pending');
-      reply
-        .type('text/html')
-        .send(renderAdminPage(pending.map(toDto), req.adminUser?.username ?? 'admin', auth.logoutPath));
-    });
-
-    // JSON list (used by the CLI and any future custom UI).
+    // JSON list of pending submissions (the React admin page polls this).
     admin.get('/api/admin/pending', async () => listByStatus('pending').map(toDto));
 
-    // Server-Sent Events stream — pushes 'submission' events to open review tabs.
-    admin.get('/api/admin/events', (req, reply) => {
-      reply.hijack();
-      const res = reply.raw;
-      res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-      });
-
-      addSseClient(res);
-
-      const heartbeat = setInterval(() => {
-        try { res.write(': heartbeat\n\n'); } catch { clearInterval(heartbeat); }
-      }, 30_000);
-
-      req.raw.on('close', () => {
-        clearInterval(heartbeat);
-        removeSseClient(res);
-      });
-    });
-
-    // Serve an uploaded screenshot for review (admin-gated).
+    // Serve an uploaded screenshot for review. Admin-gated, so the SPA fetches it
+    // with the bearer token and renders it via an object URL.
     admin.get('/api/admin/uploads/:file', async (req, reply) => {
       const file = (req.params as { file: string }).file;
       if (!/^[\w.-]+$/.test(file)) return reply.code(400).send('bad filename');

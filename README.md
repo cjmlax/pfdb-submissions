@@ -82,49 +82,46 @@ npm run review -- --list  # just print the queue
 docker compose exec pfdb-submissions node dist/cli/review.js
 ```
 
-## Authentik + Nginx Proxy Manager (oidc mode, same-origin)
+## Auth (single bearer-token model, same-origin)
 
-The worker authenticates admins itself via Authentik (the OIDC code flow) and is
-served **same-origin** with the website at `pfdb.cjmlax.com/api/*` — no separate
-API subdomain, no Authentik proxy outpost, and no per-path auth whitelist. Each
-route enforces its own access: `requireAdmin` for the admin panel, `requireUser`
-for signed-in website users, and open for public endpoints.
+There is **no cookie/session login**. Everything authenticates with the
+signed-in SPA user's **OIDC id_token** (Bearer), issued by the public `pfdb`
+Authentik app. The worker verifies it (`userAuth.ts`) and gates each route:
 
-**1. Authentik — Provider, Application, Group**
-- Create a group, e.g. `pfdb-admins`, and add yourself to it.
-- Create an **OAuth2 / OpenID Provider**:
-  - Client type: **Confidential** (the worker holds the secret)
-  - Redirect URI: `https://pfdb.cjmlax.com/api/auth/callback`
-  - Signing key: your default certificate
-- Create an **Application** bound to it with slug `pfdb-submissions` — the issuer
-  becomes `https://authentik.cjmlax.com/application/o/pfdb-submissions/`.
+- **Public** — `/api/types`, `/api/submit`, `/api/export*`, `/healthz` (open)
+- **Signed-in user** — `requireUser` (e.g. `/api/me`)
+- **Admin** — `requireUserAdmin`, which additionally requires the admin group
+  (`/api/admin/*`: submission review, badges)
 
-**2. Nginx Proxy Manager**
-- On the **website** host (`pfdb.cjmlax.com`), proxy the API to the worker over
-  the shared Docker network — no forward-auth, no outpost:
+The API is served **same-origin** with the site at `pfdb.cjmlax.com/api/*`, so
+there's no separate subdomain, no Authentik proxy outpost, no per-path whitelist,
+and no CORS preflight.
 
-  ```nginx
-  location /api/ {
-      proxy_pass http://pfdb-submissions:8080;
-      proxy_http_version 1.1;
-      proxy_set_header Host $host;
-      proxy_set_header X-Real-IP $remote_addr;
-      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-      proxy_set_header X-Forwarded-Proto $scheme;
-  }
-  ```
+**1. Authentik** — one **OAuth2 / OpenID Provider** (public, PKCE) for the SPA,
+bound to an Application with slug `pfdb` (issuer
+`https://authentik.cjmlax.com/application/o/pfdb/`). Create a group `pfdb-admins`
+and add your admins. The SPA scope mapping emits `pfdb_groups` with the `pfdb-`
+prefix stripped, so membership in `pfdb-admins` arrives as `admins`.
 
-  Because the API is same-origin with the site, the browser never issues a CORS
-  preflight for `/api/*`.
+**2. Nginx Proxy Manager** — on the **website** host (`pfdb.cjmlax.com`), proxy
+the API to the worker over the shared Docker network:
 
-**3. Worker**
-- `AUTH_MODE=oidc` with the `OIDC_*` vars from `.env.example`:
-  - `OIDC_ISSUER=https://authentik.cjmlax.com/application/o/pfdb-submissions/`
-  - `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` from the provider
-  - `OIDC_REDIRECT_URI=https://pfdb.cjmlax.com/api/auth/callback`
-  - `OIDC_SCOPE=openid profile` (group names arrive in the `profile` claim)
-- `ADMIN_GROUP=pfdb-admins` — must match a group you're in, or the login succeeds
-  but the admin area is denied with `403`.
+```nginx
+location /api/ {
+    proxy_pass http://pfdb-submissions:8080;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+**3. Worker** — set the `USER_OIDC_*` vars (all have defaults in `config.ts`):
+- `USER_OIDC_ISSUER=https://authentik.cjmlax.com/application/o/pfdb/`
+- `USER_OIDC_CLIENT_ID=<the public SPA client id>`
+- `USER_OIDC_ADMIN_GROUP=admins` — must match a group you're in (the stripped
+  form of `pfdb-admins`), or admin calls return `403`.
 
 **Verify** (after deploying):
 
@@ -132,21 +129,8 @@ for signed-in website users, and open for public endpoints.
 curl -i https://pfdb.cjmlax.com/api/types   # 200 — public endpoint, reaches the worker
 ```
 
-Then open `https://pfdb.cjmlax.com/api/admin/` in a browser: it should redirect
-you through Authentik and back, then render the admin panel (once you're in
-`ADMIN_GROUP`).
-
-### Signed-in website users
-The public SPA uses its **own** Authentik OAuth2 application — a *public* PKCE
-client — and sends its id_token as a Bearer token to user endpoints like
-`/api/me`, which the worker verifies in `userAuth.ts`. That's independent of the
-admin provider above and needs no proxy configuration.
-
-### Other auth modes
-- `AUTH_MODE=forward` — trust identity headers from an Authentik proxy outpost
-  (the previous setup; needs the outpost plus a per-path whitelist).
-- `AUTH_MODE=password` — a single password login at `/api/auth/login`. Easiest
-  for local testing; least preferred in production.
+Then sign in on the website and open **/admin/submissions** — the React review
+queue. Admin actions send your id_token automatically.
 
 ## Screenshots
 

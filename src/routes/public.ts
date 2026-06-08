@@ -156,7 +156,7 @@ export async function registerPublicRoutes(app: FastifyInstance) {
       // Surface the attribution link (if any) in the review note column.
       const data = parsed.data as { sourceLink?: string };
       const ipHash = createHash('sha256')
-        .update(`${req.ip}|${config.auth.cookieSecret}`)
+        .update(`${req.ip}|${config.ipHashSecret}`)
         .digest('hex')
         .slice(0, 16);
 
