@@ -82,78 +82,69 @@ npm run review -- --list  # just print the queue
 docker compose exec pfdb-submissions node dist/cli/review.js
 ```
 
-## Authentik + Nginx Proxy Manager (forward mode)
+## Authentik + Nginx Proxy Manager (oidc mode, same-origin)
 
-This is the recommended setup: NPM authenticates admins against Authentik and
-forwards their identity to the worker, which checks the `ADMIN_GROUP`.
+The worker authenticates admins itself via Authentik (the OIDC code flow) and is
+served **same-origin** with the website at `pfdb.cjmlax.com/api/*` — no separate
+API subdomain, no Authentik proxy outpost, and no per-path auth whitelist. Each
+route enforces its own access: `requireAdmin` for the admin panel, `requireUser`
+for signed-in website users, and open for public endpoints.
 
 **1. Authentik — Provider, Application, Group**
-- Create a group, e.g. `pfdb-admin`, and add yourself to it.
-- Create a **Proxy Provider** (forward auth, single application):
-  - External host: `https://pfdb-api.cjmlax.com`
-  - Mode: *Forward auth (single application)*
-- Create an **Application** bound to that provider.
-- Make sure your outpost (embedded is fine) serves it.
+- Create a group, e.g. `pfdb-admins`, and add yourself to it.
+- Create an **OAuth2 / OpenID Provider**:
+  - Client type: **Confidential** (the worker holds the secret)
+  - Redirect URI: `https://pfdb.cjmlax.com/api/auth/callback`
+  - Signing key: your default certificate
+- Create an **Application** bound to it with slug `pfdb-submissions` — the issuer
+  becomes `https://authentik.cjmlax.com/application/o/pfdb-submissions/`.
 
-**2. Authentik — exempt the public endpoints (important)**
-
-Forward auth protects the *whole* host by default, which means it will also
-intercept `POST /api/submit` and redirect it to login — the browser can't follow
-that cross-origin redirect, so submissions fail with a `302`. Exempt the public
-paths at the provider so they bypass auth entirely:
-
-- Provider → **Edit** → **Advanced protocol settings** → **Unauthenticated Paths**
-  (a.k.a. *Unauthenticated URLs*), one regex per line:
-
-  ```
-  ^/api/submit$
-  ^/api/types$
-  ^/healthz$
-  ```
-
-This is the reliable way to keep the public API open while still gating
-`/api/admin/`. (Doing it purely via nginx `location` precedence in NPM is fragile
-because NPM owns the generated `location /` block — prefer the setting above.)
-
-**3. Nginx Proxy Manager**
-- Add a Proxy Host for `pfdb-api.cjmlax.com` → `pfdb-submissions:8080` (on the
-  shared `nginx_proxy_network` Docker network). Enable websockets + SSL.
-- In the host's **Advanced** tab, paste the forward-auth snippet — use the
-  up-to-date one **Authentik publishes for Nginx Proxy Manager** as the source of
-  truth (it wires the `/outpost.goauthentik.io` location and the `auth_request`).
-  The only worker-specific additions you need are forwarding the identity headers
-  to the backend (and, optionally, the anti-spoofing secret):
+**2. Nginx Proxy Manager**
+- On the **website** host (`pfdb.cjmlax.com`), proxy the API to the worker over
+  the shared Docker network — no forward-auth, no outpost:
 
   ```nginx
-  proxy_set_header X-authentik-username $authentik_username;
-  proxy_set_header X-authentik-groups   $authentik_groups;
-  # Optional anti-spoofing secret (must equal TRUST_PROXY_SECRET):
-  proxy_set_header X-Proxy-Secret "REPLACE_WITH_TRUST_PROXY_SECRET";
+  location /api/ {
+      proxy_pass http://pfdb-submissions:8080;
+      proxy_http_version 1.1;
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+  }
   ```
 
-  > With the Unauthenticated Paths from step 2 in place, you do **not** also need a
-  > separate `location ~ ^/(api/submit|...)` bypass — Authentik already lets those
-  > through. If you ever stop using Unauthenticated Paths, add a bypass location
-  > with `auth_request off;` for the public paths instead.
+  Because the API is same-origin with the site, the browser never issues a CORS
+  preflight for `/api/*`.
 
-**4. Worker**
-- `AUTH_MODE=forward`, `ADMIN_GROUP=pfdb-admin`, and (recommended)
-  `TRUST_PROXY_SECRET` matching the value in the snippet above.
+**3. Worker**
+- `AUTH_MODE=oidc` with the `OIDC_*` vars from `.env.example`:
+  - `OIDC_ISSUER=https://authentik.cjmlax.com/application/o/pfdb-submissions/`
+  - `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` from the provider
+  - `OIDC_REDIRECT_URI=https://pfdb.cjmlax.com/api/auth/callback`
+  - `OIDC_SCOPE=openid profile` (group names arrive in the `profile` claim)
+- `ADMIN_GROUP=pfdb-admins` — must match a group you're in, or the login succeeds
+  but the admin area is denied with `403`.
 
-**Verify** (from the host, after deploying):
+**Verify** (after deploying):
 
 ```bash
-curl -i https://pfdb-api.cjmlax.com/healthz             # 200 {"ok":true,...}
-curl -i -X POST https://pfdb-api.cjmlax.com/api/submit  # 400 (reached the worker) — NOT 302
+curl -i https://pfdb.cjmlax.com/api/types   # 200 — public endpoint, reaches the worker
 ```
 
-A `302` on those means auth is still intercepting the public paths (revisit step 2).
-Also confirm `ALLOWED_ORIGIN` matches your website origin, or the browser will
-block reading the response even once the request gets through.
+Then open `https://pfdb.cjmlax.com/api/admin/` in a browser: it should redirect
+you through Authentik and back, then render the admin panel (once you're in
+`ADMIN_GROUP`).
 
-### Fallbacks
-- `AUTH_MODE=oidc` — the worker runs the OIDC code flow itself (set the
-  `OIDC_*` vars; redirect URI `https://pfdb-api.cjmlax.com/api/auth/callback`).
+### Signed-in website users
+The public SPA uses its **own** Authentik OAuth2 application — a *public* PKCE
+client — and sends its id_token as a Bearer token to user endpoints like
+`/api/me`, which the worker verifies in `userAuth.ts`. That's independent of the
+admin provider above and needs no proxy configuration.
+
+### Other auth modes
+- `AUTH_MODE=forward` — trust identity headers from an Authentik proxy outpost
+  (the previous setup; needs the outpost plus a per-path whitelist).
 - `AUTH_MODE=password` — a single password login at `/api/auth/login`. Easiest
   for local testing; least preferred in production.
 
