@@ -18,6 +18,27 @@ interface TeableField {
   dbFieldName: string;
 }
 
+// Table IDs resolved by display name from the base's table list, cached for the
+// process lifetime. Lets the worker discover tables instead of hardcoding their
+// IDs in config — the names are stable and human-readable.
+let tableIdByName: Map<string, string> | null = null;
+
+export async function resolveTableId(name: string): Promise<string> {
+  if (!tableIdByName) {
+    const url = `${config.teable.baseUrl}/api/base/${config.teable.baseId}/table`;
+    const res = await fetch(url, { headers: authHeader() });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`Teable table list failed (${res.status}): ${text.slice(0, 300)}`);
+    }
+    const tables = (await res.json()) as { id: string; name: string }[];
+    tableIdByName = new Map(tables.map((t) => [t.name, t.id]));
+  }
+  const id = tableIdByName.get(name);
+  if (!id) throw new Error(`Teable table "${name}" not found in base ${config.teable.baseId}.`);
+  return id;
+}
+
 // Field metadata is cached per table for the process lifetime — field ids are
 // stable, and this lets us write records by field id (unambiguous) instead of by
 // display name, which has historically drifted.

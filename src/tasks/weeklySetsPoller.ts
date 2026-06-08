@@ -2,6 +2,7 @@ import { schedule as cronSchedule } from 'node-cron';
 import type { FastifyInstance } from 'fastify';
 import { config } from '../config';
 import {
+  resolveTableId,
   teableCreateRecordById,
   teableFieldValueExists,
   teableGetMaxNumber,
@@ -81,7 +82,7 @@ async function pollWeeklySets(log: FastifyInstance['log']): Promise<void> {
       return;
     }
 
-    const tableId = config.teable.tables.weekly;
+    const tableId = await resolveTableId('Weekly Sets');
 
     // Only check the most recent entry — the file is always appended chronologically,
     // and earlier entries may contain errors already corrected manually in the database.

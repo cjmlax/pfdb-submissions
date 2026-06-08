@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import type { SubmissionHandler } from '../types';
-import { resolveFieldId, teableCreateRecordById, teableUploadAttachmentToRecord } from '../teable';
-import { config } from '../config';
+import { resolveFieldId, resolveTableId, teableCreateRecordById, teableUploadAttachmentToRecord } from '../teable';
 
 // A community-submitted Chroma or Glass combination. The website resolves every
 // picked frog to its real Teable record, so we receive record ids directly —
@@ -38,8 +37,9 @@ export const comboHandler: SubmissionHandler<ComboPayload> = {
     return head + result + lost;
   },
   async pushDown(p, ctx) {
-    const tableId =
-      p.variant === 'chroma' ? config.teable.tables.chroma : config.teable.tables.glass;
+    const tableId = await resolveTableId(
+      p.variant === 'chroma' ? 'Chroma Combinations' : 'Glass Combinations',
+    );
 
     // Resolve each target field to its id, then build the record. Link fields
     // take an array of { id } references; source_link is a plain URL string.
@@ -53,6 +53,9 @@ export const comboHandler: SubmissionHandler<ComboPayload> = {
     }
     if (p.sourceLink) {
       fields[await resolveFieldId(tableId, { dbFieldName: 'source_link' })] = p.sourceLink;
+    }
+    if (ctx.submitter) {
+      fields[await resolveFieldId(tableId, { dbFieldName: 'submitter' })] = ctx.submitter;
     }
     const recordId = await teableCreateRecordById(tableId, fields);
 

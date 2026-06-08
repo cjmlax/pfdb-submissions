@@ -4,8 +4,9 @@ import fs from 'node:fs';
 import { schedule as cronSchedule } from 'node-cron';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { config } from '../config';
-import { queries, uploadsDir } from '../db';
-import { requireUser } from '../userAuth';
+import { queries, uploadsDir, listBySubmitter } from '../db';
+import { resolveTableId } from '../teable';
+import { requireUser, optionalUser } from '../userAuth';
 import { upsertUser, setFlair, getProfile } from '../users';
 import { getHandler, listHandlers } from '../handlers/registry';
 import { notify } from '../notify';
@@ -13,13 +14,14 @@ import { broadcastSse } from '../sse';
 import { compressImage } from '../imageProcess';
 
 // Tables exposed via the public export API. Slugs become URL path segments and
-// CSV filenames, so keep them lowercase and URL-safe.
-const EXPORT_TABLES: Record<string, { label: string; tableId: string }> = {
-  frogs:  { label: 'Frogs',        tableId: config.teable.tables.frogs  },
-  breeds: { label: 'Breeds',       tableId: config.teable.tables.breeds },
-  chroma: { label: 'Chroma Combos', tableId: config.teable.tables.chroma },
-  glass:  { label: 'Glass Combos',  tableId: config.teable.tables.glass  },
-  weekly:   { label: 'Weekly Sets', tableId: config.teable.tables.weekly},
+// CSV filenames, so keep them lowercase and URL-safe. Table IDs are resolved by
+// the Teable display name at request time (cached), not configured.
+const EXPORT_TABLES: Record<string, { label: string; tableName: string }> = {
+  frogs:  { label: 'Frogs',         tableName: 'Froggies' },
+  breeds: { label: 'Breeds',        tableName: 'Breeds' },
+  chroma: { label: 'Chroma Combos', tableName: 'Chroma Combinations' },
+  glass:  { label: 'Glass Combos',  tableName: 'Glass Combinations' },
+  weekly: { label: 'Weekly Sets',   tableName: 'Weekly Sets' },
 };
 
 // Persistent export state: hash + timestamp for each table, survives restarts.
@@ -78,6 +80,19 @@ export async function registerPublicRoutes(app: FastifyInstance) {
     },
   );
 
+  // The signed-in user's own submission history, newest first, with statuses.
+  app.get('/api/me/submissions', { preHandler: requireUser }, async (req) =>
+    listBySubmitter(req.user!.sub).map(r => ({
+      id: r.id,
+      type: r.type,
+      summary: r.summary,
+      status: r.status,
+      reviewerNote: r.reviewer_note,
+      createdAt: r.created_at,
+      reviewedAt: r.reviewed_at,
+    })),
+  );
+
   // Public submission endpoint. Accepts multipart/form-data with fields:
   //   type     — handler key (e.g. "combo")
   //   payload  — JSON string validated by that handler's schema
@@ -85,7 +100,7 @@ export async function registerPublicRoutes(app: FastifyInstance) {
   //   screenshot — optional image file
   app.post(
     '/api/submit',
-    { config: { rateLimit: { max: 20, timeWindow: '10 minutes' } } },
+    { preHandler: optionalUser, config: { rateLimit: { max: 20, timeWindow: '10 minutes' } } },
     async (req, reply) => {
       let typeStr = '';
       let payloadStr = '';
@@ -170,11 +185,16 @@ export async function registerPublicRoutes(app: FastifyInstance) {
         summary,
         screenshot,
         submitter_note: data.sourceLink ?? null,
+        submitter_sub: req.user?.sub ?? null,
+        submitter_name: req.user?.username ?? null,
         source_ip: ipHash,
         created_at: createdAt,
       });
 
-      req.log.info({ id, type: handler.type }, 'submission received');
+      // Also record the user in the directory so the admin can badge them later.
+      if (req.user) upsertUser(req.user.sub, req.user.username);
+
+      req.log.info({ id, type: handler.type, submitter: req.user?.username ?? null }, 'submission received');
       notify('submission.created', { id, type: handler.type, summary, submitterNote: data.sourceLink, createdAt });
       broadcastSse('submission', { id, type: handler.type, summary });
       return reply.send({ ok: true, id });
@@ -185,8 +205,9 @@ export async function registerPublicRoutes(app: FastifyInstance) {
   // Runs once shortly after startup and then every 24 hours.
   async function refreshHashes() {
     app.log.info('export hash refresh started');
-    for (const [slug, { tableId }] of Object.entries(EXPORT_TABLES)) {
+    for (const [slug, { tableName }] of Object.entries(EXPORT_TABLES)) {
       try {
+        const tableId = await resolveTableId(tableName);
         const res = await fetch(`${config.teable.baseUrl}/api/export/${tableId}`, {
           headers: { Authorization: `Bearer ${config.teable.token}` },
         });
@@ -236,7 +257,7 @@ export async function registerPublicRoutes(app: FastifyInstance) {
   // Fetches a CSV from Teable, updates the cached hash, and sends it to the client.
   async function serveExportCsv(
     table: string,
-    entry: { label: string; tableId: string },
+    entry: { label: string; tableName: string },
     req: FastifyRequest,
     reply: FastifyReply,
   ) {
@@ -244,7 +265,7 @@ export async function registerPublicRoutes(app: FastifyInstance) {
       return reply.code(503).send({ error: 'Export unavailable' });
     }
 
-    const exportUrl = `${config.teable.baseUrl}/api/export/${entry.tableId}`;
+    const exportUrl = `${config.teable.baseUrl}/api/export/${await resolveTableId(entry.tableName)}`;
     let upstream: Response;
     try {
       upstream = await fetch(exportUrl, {

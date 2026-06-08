@@ -4,6 +4,8 @@ import type { ZodType } from 'zod';
 export interface PushContext {
   // Absolute path to the reviewer-visible screenshot, if one was uploaded.
   screenshotPath: string | null;
+  // Display name of the submitter, or null if they submitted anonymously.
+  submitter?: string | null;
 }
 
 // A SubmissionHandler is the ONLY place a given submission type's knowledge

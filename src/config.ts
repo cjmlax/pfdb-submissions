@@ -39,13 +39,9 @@ export const config = {
   teable: {
     baseUrl: opt('TEABLE_BASE_URL', 'https://teable.cjmlax.com').replace(/\/$/, ''),
     token: opt('TEABLE_TOKEN', ''),
-    tables: {
-      frogs:  opt('FROGS_TABLE_ID',  'tblgaaUnZGx1i61RCOZ'),
-      breeds: opt('BREEDS_TABLE_ID', 'tbliUWaVe4eKqJkVEv4'),
-      chroma: opt('CHROMA_TABLE_ID', 'tbluqJI6VaHK0fWiPo6'),
-      glass:  opt('GLASS_TABLE_ID',  'tblaToM9WCudYNtRjaV'),
-      weekly:   opt('WEEKLY_TABLE_ID',   'tblOuIZRVGlTPLAfM56'),
-    },
+    // Table IDs are resolved by name at runtime (see resolveTableId) and cached,
+    // so individual table IDs no longer need to be configured — only the base.
+    baseId: opt('TEABLE_BASE_ID', 'bseylZk8mJzj9xeoAHy'),
   },
 
   upload: {

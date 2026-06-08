@@ -13,6 +13,8 @@ export interface SubmissionRow {
   summary: string;
   screenshot: string | null; // stored filename in uploads/
   submitter_note: string | null;
+  submitter_sub: string | null;  // Authentik subject, if the submitter was signed in
+  submitter_name: string | null; // their display name at submission time
   reviewer_note: string | null;
   source_ip: string | null; // hashed
   created_at: string; // ISO
@@ -36,6 +38,8 @@ db.exec(`
     summary        TEXT NOT NULL,
     screenshot     TEXT,
     submitter_note TEXT,
+    submitter_sub  TEXT,
+    submitter_name TEXT,
     reviewer_note  TEXT,
     source_ip      TEXT,
     created_at     TEXT NOT NULL,
@@ -45,15 +49,23 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_submissions_status ON submissions(status, created_at);
 `);
 
+// Migrate older databases that predate the submitter columns.
+const submissionCols = new Set(
+  (db.prepare(`PRAGMA table_info(submissions)`).all() as { name: string }[]).map(c => c.name),
+);
+if (!submissionCols.has('submitter_sub'))  db.exec(`ALTER TABLE submissions ADD COLUMN submitter_sub TEXT`);
+if (!submissionCols.has('submitter_name')) db.exec(`ALTER TABLE submissions ADD COLUMN submitter_name TEXT`);
+
 export const queries = {
   insert: db.prepare(`
     INSERT INTO submissions
-      (id, type, payload, status, summary, screenshot, submitter_note, source_ip, created_at)
+      (id, type, payload, status, summary, screenshot, submitter_note, submitter_sub, submitter_name, source_ip, created_at)
     VALUES
-      (@id, @type, @payload, 'pending', @summary, @screenshot, @submitter_note, @source_ip, @created_at)
+      (@id, @type, @payload, 'pending', @summary, @screenshot, @submitter_note, @submitter_sub, @submitter_name, @source_ip, @created_at)
   `),
   byId: db.prepare(`SELECT * FROM submissions WHERE id = ?`),
   listByStatus: db.prepare(`SELECT * FROM submissions WHERE status = ? ORDER BY created_at DESC`),
+  listBySubmitter: db.prepare(`SELECT * FROM submissions WHERE submitter_sub = ? ORDER BY created_at DESC`),
   setStatus: db.prepare(`
     UPDATE submissions
        SET status = @status,
@@ -78,4 +90,8 @@ export function getById(id: string): SubmissionRow | undefined {
 
 export function listByStatus(status: Status): SubmissionRow[] {
   return queries.listByStatus.all(status) as SubmissionRow[];
+}
+
+export function listBySubmitter(sub: string): SubmissionRow[] {
+  return queries.listBySubmitter.all(sub) as SubmissionRow[];
 }

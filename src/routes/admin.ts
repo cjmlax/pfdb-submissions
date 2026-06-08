@@ -30,6 +30,7 @@ function toDto(r: SubmissionRow) {
     payload: r.payload,
     summary: r.summary,
     submitterNote: r.submitter_note,
+    submitter: r.submitter_name, // null → anonymous submission
     screenshot: r.screenshot ? `/api/admin/uploads/${r.screenshot}` : null,
     createdAt: r.created_at,
   };
@@ -68,7 +69,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       try {
         const payload = JSON.parse(row.payload);
         const screenshotPath = row.screenshot ? path.join(uploadsDir, row.screenshot) : null;
-        const ref = (await handler.pushDown(payload, { screenshotPath })) || null;
+        const ref = (await handler.pushDown(payload, { screenshotPath, submitter: row.submitter_name })) || null;
         queries.setStatus.run({
           id, status: 'pushed', reviewer_note: null, reviewed_at: new Date().toISOString(), pushed_ref: ref,
         });
