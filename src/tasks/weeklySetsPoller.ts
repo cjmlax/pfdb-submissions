@@ -17,8 +17,6 @@ const FROG_CODE_FIELD = 'fldXdFuyFj6NDz1qjMY'; // numeric code "breed:base:secon
 const SET_DATE_FIELD_ID  = 'fld0g2OJuIM4fScLjfS';
 const SET_NAME_FIELD_ID  = 'fldGxycvkmQqAM1ACak';
 const SET_CHRON_FIELD_ID = 'fldaGzZa0KXnxP6HHYm';
-const POTION_FIELD_ID    = 'fld4Ydpj2Q4PWFu5B5K';
-const STAMP_FIELD_ID     = 'fldO6PVSdLA2sOAOkdc';
 
 const FROG_FIELD_IDS = [
   'fldRIvXvkq7FC4w7BZ7', // Frog A
@@ -107,13 +105,12 @@ async function pollWeeklySets(log: FastifyInstance['log']): Promise<void> {
     }
 
     const nextChron = (await teableGetMaxNumber(tableId, SET_CHRON_FIELD_ID)) + 1;
+    // The text file does not include reward amounts, so Potion/Stamp are left
+    // unset (blank) — fill them in manually in Teable if needed.
     const fields: Record<string, unknown> = {
       [SET_NAME_FIELD_ID]:  latest.name,
       [SET_DATE_FIELD_ID]:  latest.weekId,
       [SET_CHRON_FIELD_ID]: nextChron,
-      // Text file does not include reward amounts; update manually in Teable if needed
-      [POTION_FIELD_ID]: 0,
-      [STAMP_FIELD_ID]:  0,
     };
     for (let i = 0; i < frogIds.length; i++) {
       fields[FROG_FIELD_IDS[i]] = [{ id: frogIds[i] }];
