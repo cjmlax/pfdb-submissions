@@ -54,8 +54,9 @@ export const comboHandler: SubmissionHandler<ComboPayload> = {
     if (p.sourceLink) {
       fields[await resolveFieldId(tableId, { dbFieldName: 'source_link' })] = p.sourceLink;
     }
-    if (ctx.submitter) {
-      fields[await resolveFieldId(tableId, { dbFieldName: 'submitter' })] = ctx.submitter;
+    if (ctx.submitterSub) {
+      // Store the stable Authentik ID so attribution survives username changes.
+      fields[await resolveFieldId(tableId, { dbFieldName: 'submitter' })] = ctx.submitterSub;
     }
     const recordId = await teableCreateRecordById(tableId, fields);
 

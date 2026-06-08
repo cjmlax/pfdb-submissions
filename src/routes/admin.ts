@@ -69,7 +69,11 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       try {
         const payload = JSON.parse(row.payload);
         const screenshotPath = row.screenshot ? path.join(uploadsDir, row.screenshot) : null;
-        const ref = (await handler.pushDown(payload, { screenshotPath, submitter: row.submitter_name })) || null;
+        const ref = (await handler.pushDown(payload, {
+          screenshotPath,
+          submitterSub: row.submitter_sub,
+          submitterName: row.submitter_name,
+        })) || null;
         queries.setStatus.run({
           id, status: 'pushed', reviewer_note: null, reviewed_at: new Date().toISOString(), pushed_ref: ref,
         });
