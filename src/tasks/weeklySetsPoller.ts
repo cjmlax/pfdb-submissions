@@ -12,7 +12,7 @@ import {
 const SETS_URL = 'https://nimblebit.com/sets.txt';
 
 const FROGS_TABLE_ID     = 'tblgaaUnZGx1i61RCOZ';
-const FROG_READABLE_FIELD = 'fldYaxw2QNksOM7x79k'; // formula: "Base Secondary Breed"
+const FROG_READABLE_FIELD = 'fldYaxw2QNksOM7x79k'; // formula yields "breed:base:secondary"
 
 const SET_DATE_FIELD_ID  = 'fld0g2OJuIM4fScLjfS';
 const SET_NAME_FIELD_ID  = 'fldGxycvkmQqAM1ACak';
@@ -57,10 +57,11 @@ function parseFile(text: string): ParsedSet[] {
       const count     = parseInt(parts[0], 10);
       const base      = parts[1];
       const secondary = parts[2];
-      const breed     = parts.slice(3).join(':');
+      const breed     = parts[3];
       if (!count || !base || !secondary || !breed) continue;
-      // Teable's Readable Name formula = "Base Secondary Breed"
-      const readable = `${base} ${secondary} ${breed}`;
+      // File format is count:base:secondary:breed, but the frogs table's readable
+      // name is breed:base:secondary (colon-separated), e.g. file "1:13:2:103" → "103:13:2".
+      const readable = `${breed}:${base}:${secondary}`;
       for (let c = 0; c < count; c++) frogs.push(readable);
     }
     if (frogs.length > 0) sets.push({ weekId: parseWeekId(weekRaw), name, frogs });
