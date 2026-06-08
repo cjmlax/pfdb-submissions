@@ -98,8 +98,10 @@ there's no separate subdomain, no Authentik proxy outpost, no per-path whitelist
 and no CORS preflight.
 
 **1. Authentik** — one **OAuth2 / OpenID Provider** (public, PKCE) for the SPA,
-bound to an Application with slug `pfdb` (issuer
-`https://authentik.cjmlax.com/application/o/pfdb/`). Create a group `pfdb-admins`
+bound to an Application with slug `pfdb`. PFDB login is served on a dedicated
+Authentik hostname (`pfdbauth.cjmlax.com`) so it can have its own **Brand**
+(logo, CSS, default flows), making the issuer
+`https://pfdbauth.cjmlax.com/application/o/pfdb/`. Create a group `pfdb-admins`
 and add your admins. The SPA scope mapping emits `pfdb_groups` with the `pfdb-`
 prefix stripped, so membership in `pfdb-admins` arrives as `admins`.
 
@@ -118,7 +120,7 @@ location /api/ {
 ```
 
 **3. Worker** — set the `USER_OIDC_*` vars (all have defaults in `config.ts`):
-- `USER_OIDC_ISSUER=https://authentik.cjmlax.com/application/o/pfdb/`
+- `USER_OIDC_ISSUER=https://pfdbauth.cjmlax.com/application/o/pfdb/`
 - `USER_OIDC_CLIENT_ID=<the public SPA client id>`
 - `USER_OIDC_ADMIN_GROUP=admins` — must match a group you're in (the stripped
   form of `pfdb-admins`), or admin calls return `403`.

@@ -28,7 +28,7 @@ export const config = {
   // Authentik application from the admin OIDC above. These are public values
   // (the client id is not a secret), so the defaults are safe to ship.
   userAuth: {
-    issuer:      opt('USER_OIDC_ISSUER', 'https://authentik.cjmlax.com/application/o/pfdb/'),
+    issuer:      opt('USER_OIDC_ISSUER', 'https://pfdbauth.cjmlax.com/application/o/pfdb/'),
     clientId:    opt('USER_OIDC_CLIENT_ID', 'gYpSjz6qGj1e1HUPihJeMt9aTP9I0ymgA877eScc'),
     groupsClaim: opt('USER_OIDC_GROUPS_CLAIM', 'pfdb_groups'),
     // Group (within pfdb_groups) that grants SPA admin powers. The SPA scope
