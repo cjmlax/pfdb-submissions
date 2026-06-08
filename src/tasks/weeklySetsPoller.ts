@@ -84,9 +84,10 @@ async function pollWeeklySets(log: FastifyInstance['log']): Promise<void> {
 
     const tableId = await resolveTableId('Weekly Sets');
 
-    // Only check the most recent entry — the file is always appended chronologically,
-    // and earlier entries may contain errors already corrected manually in the database.
-    const latest = sets[sets.length - 1];
+    // Only check the most recent entry — the file lists newest-first (each new set
+    // is prepended to the top), so sets[0] is the latest. Earlier entries further
+    // down may contain errors already corrected manually in the database.
+    const latest = sets[0];
     const exists = await teableFieldValueExists(tableId, SET_DATE_FIELD_ID, latest.weekId);
     if (exists) {
       log.info(`Weekly sets poll: ${latest.weekId} already recorded`);
