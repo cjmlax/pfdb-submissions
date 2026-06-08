@@ -12,7 +12,7 @@ import {
 const SETS_URL = 'https://nimblebit.com/sets.txt';
 
 const FROGS_TABLE_ID     = 'tblgaaUnZGx1i61RCOZ';
-const FROG_READABLE_FIELD = 'fldYaxw2QNksOM7x79k'; // formula yields "breed:base:secondary"
+const FROG_CODE_FIELD = 'fldXdFuyFj6NDz1qjMY'; // numeric code "breed:base:secondary", e.g. "103:13:2"
 
 const SET_DATE_FIELD_ID  = 'fld0g2OJuIM4fScLjfS';
 const SET_NAME_FIELD_ID  = 'fldGxycvkmQqAM1ACak';
@@ -34,7 +34,7 @@ const FROG_FIELD_IDS = [
 interface ParsedSet {
   weekId: string;  // YYYY-WW
   name: string;
-  frogs: string[]; // readable names ("Base Secondary Breed"), expanded by count
+  frogs: string[]; // numeric codes ("breed:base:secondary"), expanded by count
 }
 
 function parseWeekId(raw: string): string {
@@ -95,7 +95,7 @@ async function pollWeeklySets(log: FastifyInstance['log']): Promise<void> {
       return;
     }
 
-    const frogIndex = await teableBuildLookupMap(FROGS_TABLE_ID, FROG_READABLE_FIELD);
+    const frogIndex = await teableBuildLookupMap(FROGS_TABLE_ID, FROG_CODE_FIELD);
     const frogIds: string[] = [];
     for (const readable of latest.frogs.slice(0, FROG_FIELD_IDS.length)) {
       const id = frogIndex.get(readable);
