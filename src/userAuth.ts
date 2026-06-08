@@ -75,6 +75,17 @@ export const optionalUser: preHandlerHookHandler = async (req) => {
   if (user) req.user = user;
 };
 
+// Like requireUser, but also requires the SPA admin group. Lets the React admin
+// UI manage badges with the signed-in user's bearer token (no admin cookie).
+export const requireUserAdmin: preHandlerHookHandler = async (req, reply) => {
+  const user = await verify(req);
+  if (!user) return reply.code(401).send({ error: 'unauthorized' });
+  if (!user.groups.includes(config.userAuth.adminGroup)) {
+    return reply.code(403).send({ error: 'forbidden' });
+  }
+  req.user = user;
+};
+
 // True if the signed-in user is in the given PFDB group (e.g. 'admin', 'mod').
 export function userInGroup(req: FastifyRequest, group: string): boolean {
   return req.user?.groups.includes(group) ?? false;

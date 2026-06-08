@@ -50,6 +50,9 @@ export const config = {
     issuer:      opt('USER_OIDC_ISSUER', 'https://authentik.cjmlax.com/application/o/pfdb/'),
     clientId:    opt('USER_OIDC_CLIENT_ID', 'gYpSjz6qGj1e1HUPihJeMt9aTP9I0ymgA877eScc'),
     groupsClaim: opt('USER_OIDC_GROUPS_CLAIM', 'pfdb_groups'),
+    // Group (within pfdb_groups) that grants SPA admin powers. The SPA scope
+    // mapping strips the "pfdb-" prefix, so "pfdb-admins" arrives as "admins".
+    adminGroup:  opt('USER_OIDC_ADMIN_GROUP', 'admins'),
   },
 
   teable: {

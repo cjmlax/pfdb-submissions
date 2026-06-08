@@ -1,16 +1,16 @@
 import type { FastifyInstance } from 'fastify';
-import type { AuthProvider } from '../auth';
+import { requireUserAdmin } from '../userAuth';
 import {
   listBadges, getBadge, upsertBadge, deleteBadge,
   listUsers, getUser, getProfile, grantBadge, revokeBadge, badgesForUser,
 } from '../users';
 
-// Admin-only management of the badge catalog and per-user grants. Registered in
-// its own encapsulated scope so the requireAdmin gate applies to everything here,
-// matching how the submission admin routes are structured.
-export async function registerAdminBadgeRoutes(app: FastifyInstance, auth: AuthProvider) {
+// Admin-only management of the badge catalog and per-user grants. Gated by the
+// SPA bearer-token admin check (requireUserAdmin) so the React admin page can
+// call these with the signed-in user's id_token.
+export async function registerAdminBadgeRoutes(app: FastifyInstance) {
   await app.register(async (admin) => {
-    admin.addHook('preHandler', auth.requireAdmin);
+    admin.addHook('preHandler', requireUserAdmin);
 
     // ── Badge catalog ──────────────────────────────────────────────────────
     admin.get('/api/admin/badges', async () => listBadges());
@@ -43,7 +43,11 @@ export async function registerAdminBadgeRoutes(app: FastifyInstance, auth: AuthP
     });
 
     // ── Users + grants ─────────────────────────────────────────────────────
-    admin.get('/api/admin/users', async () => listUsers());
+    // Returns each known user together with their badges, so the admin UI can
+    // render grant/revoke without an extra request per user.
+    admin.get('/api/admin/users', async () =>
+      listUsers().map(u => getProfile(u.sub)).filter(Boolean),
+    );
 
     admin.get<{ Params: { sub: string } }>('/api/admin/users/:sub', async (req, reply) => {
       const profile = getProfile(req.params.sub);
@@ -61,7 +65,7 @@ export async function registerAdminBadgeRoutes(app: FastifyInstance, auth: AuthP
         if (!badgeId) return reply.code(400).send({ error: 'badgeId is required' });
         if (!getUser(sub)) return reply.code(404).send({ error: 'user not found (they must sign in once first)' });
         if (!getBadge(badgeId)) return reply.code(404).send({ error: 'badge not found' });
-        grantBadge(sub, badgeId, req.adminUser?.username ?? null);
+        grantBadge(sub, badgeId, req.user?.username ?? null);
         return { ok: true, badges: badgesForUser(sub) };
       },
     );

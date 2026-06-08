@@ -34,7 +34,7 @@ async function main() {
 
   await registerPublicRoutes(app);
   await registerAdminRoutes(app, auth);
-  await registerAdminBadgeRoutes(app, auth);
+  await registerAdminBadgeRoutes(app);
 
   await app.listen({ port: config.port, host: config.host });
   app.log.info(
