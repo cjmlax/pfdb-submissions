@@ -7,7 +7,7 @@ import { config } from '../config';
 import { queries, uploadsDir, listBySubmitter } from '../db';
 import { resolveTableId } from '../teable';
 import { requireUser, optionalUser } from '../userAuth';
-import { upsertUser, setFlair, getProfile } from '../users';
+import { upsertUser, setFlairPending, getProfile } from '../users';
 import { getHandler, listHandlers } from '../handlers/registry';
 import { notify } from '../notify';
 import { broadcastSse } from '../sse';
@@ -67,7 +67,9 @@ export async function registerPublicRoutes(app: FastifyInstance) {
     return getProfile(sub);
   });
 
-  // Lets a user set their own flair (a short tagline). Capped and trimmed.
+  // Lets a user submit their in-game Friend Code as flair. It is held PENDING and
+  // does not go live until an admin approves it (after an off-line confirmation).
+  // An empty value withdraws a pending request. Capped and trimmed.
   app.patch<{ Body: { flair?: string | null } }>(
     '/api/me',
     { preHandler: requireUser },
@@ -75,7 +77,15 @@ export async function registerPublicRoutes(app: FastifyInstance) {
       const { sub, username } = req.user!;
       upsertUser(sub, username);
       const raw = typeof req.body?.flair === 'string' ? req.body.flair.trim().slice(0, 80) : '';
-      setFlair(sub, raw || null);
+      setFlairPending(sub, raw || null);
+      if (raw) {
+        notify('flair.requested', {
+          id: sub,
+          type: 'flair',
+          summary: `Friend code: ${raw} — from ${username ?? sub}`,
+          createdAt: new Date().toISOString(),
+        });
+      }
       return getProfile(sub);
     },
   );

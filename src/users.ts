@@ -6,10 +6,11 @@ import { db } from './db';
 
 export interface UserRow {
   sub: string;
-  username: string | null; // cached preferred_username, for display/admin convenience
-  flair: string | null;    // short freeform tagline shown next to the user
-  created_at: string;      // ISO — first time we saw this user
-  last_seen: string;       // ISO — refreshed on each profile fetch
+  username: string | null;      // cached preferred_username, for display/admin convenience
+  flair: string | null;         // APPROVED in-game friend code, shown next to the user
+  flair_pending: string | null; // submitted friend code awaiting admin approval (null if none)
+  created_at: string;           // ISO — first time we saw this user
+  last_seen: string;            // ISO — refreshed on each profile fetch
 }
 
 export interface BadgeRow {
@@ -26,17 +27,19 @@ export interface BadgeRow {
 export interface PublicProfile {
   sub: string;
   username: string | null;
-  flair: string | null;
+  flair: string | null;         // approved friend code (displayed)
+  flair_pending: string | null; // friend code awaiting approval (shown to the owner/admin)
   badges: BadgeRow[];
 }
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
-    sub        TEXT PRIMARY KEY,
-    username   TEXT,
-    flair      TEXT,
-    created_at TEXT NOT NULL,
-    last_seen  TEXT NOT NULL
+    sub           TEXT PRIMARY KEY,
+    username      TEXT,
+    flair         TEXT,
+    flair_pending TEXT,
+    created_at    TEXT NOT NULL,
+    last_seen     TEXT NOT NULL
   );
 
   CREATE TABLE IF NOT EXISTS badges (
@@ -61,6 +64,12 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_user_badges_sub ON user_badges(sub);
 `);
 
+// Migrate older databases that predate the pending-flair column.
+const userCols = new Set(
+  (db.prepare(`PRAGMA table_info(users)`).all() as { name: string }[]).map(c => c.name),
+);
+if (!userCols.has('flair_pending')) db.exec(`ALTER TABLE users ADD COLUMN flair_pending TEXT`);
+
 const stmts = {
   upsertUser: db.prepare(`
     INSERT INTO users (sub, username, created_at, last_seen)
@@ -69,9 +78,14 @@ const stmts = {
       username  = excluded.username,
       last_seen = excluded.last_seen
   `),
-  getUser:   db.prepare(`SELECT * FROM users WHERE sub = ?`),
-  listUsers: db.prepare(`SELECT * FROM users ORDER BY last_seen DESC`),
-  setFlair:  db.prepare(`UPDATE users SET flair = @flair WHERE sub = @sub`),
+  getUser:    db.prepare(`SELECT * FROM users WHERE sub = ?`),
+  listUsers:  db.prepare(`SELECT * FROM users ORDER BY last_seen DESC`),
+  deleteUser: db.prepare(`DELETE FROM users WHERE sub = ?`),
+
+  // Friend-code (flair) submission + approval workflow.
+  setFlairPending: db.prepare(`UPDATE users SET flair_pending = @flair WHERE sub = @sub`),
+  approveFlair:    db.prepare(`UPDATE users SET flair = flair_pending, flair_pending = NULL WHERE sub = @sub`),
+  rejectFlair:     db.prepare(`UPDATE users SET flair_pending = NULL WHERE sub = @sub`),
 
   listBadges: db.prepare(`SELECT * FROM badges ORDER BY sort_order, name`),
   getBadge:   db.prepare(`SELECT * FROM badges WHERE id = ?`),
@@ -119,8 +133,35 @@ export function listUsers(): UserRow[] {
   return stmts.listUsers.all() as UserRow[];
 }
 
-export function setFlair(sub: string, flair: string | null): void {
-  stmts.setFlair.run({ sub, flair });
+// A user submits a friend code for review — it's held in flair_pending and does
+// NOT change their live flair until an admin approves it. Passing null/empty
+// clears a pending request (e.g. the user withdrew it).
+export function setFlairPending(sub: string, flair: string | null): void {
+  stmts.setFlairPending.run({ sub, flair });
+}
+
+// Admin approves the pending friend code: it becomes the live, displayed flair
+// and the pending slot is cleared.
+export function approveFlair(sub: string): void {
+  stmts.approveFlair.run({ sub });
+}
+
+// Admin rejects the pending friend code: the pending slot is cleared, the live
+// flair is left untouched.
+export function rejectFlair(sub: string): void {
+  stmts.rejectFlair.run({ sub });
+}
+
+// Everyone with a friend code awaiting approval, most-recently-seen first.
+export function listPendingFlair(): UserRow[] {
+  return listUsers().filter(u => u.flair_pending != null && u.flair_pending !== '');
+}
+
+// Removes a user and (via ON DELETE CASCADE) their badge grants. Note this only
+// clears the worker's local row — if the same person signs in again while still
+// active in Authentik, upsertUser recreates the row on their next request.
+export function deleteUser(sub: string): void {
+  stmts.deleteUser.run(sub);
 }
 
 // User row + earned badges, in the shape the SPA renders. Null if unknown.
@@ -131,6 +172,7 @@ export function getProfile(sub: string): PublicProfile | null {
     sub: user.sub,
     username: user.username,
     flair: user.flair,
+    flair_pending: user.flair_pending,
     badges: badgesForUser(sub),
   };
 }

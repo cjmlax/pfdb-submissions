@@ -2,7 +2,8 @@ import type { FastifyInstance } from 'fastify';
 import { requireUserAdmin } from '../userAuth';
 import {
   listBadges, getBadge, upsertBadge, deleteBadge,
-  listUsers, getUser, getProfile, grantBadge, revokeBadge, badgesForUser,
+  listUsers, getUser, getProfile, deleteUser, approveFlair, rejectFlair,
+  grantBadge, revokeBadge, badgesForUser,
 } from '../users';
 
 // Admin-only management of the badge catalog and per-user grants. Gated by the
@@ -53,6 +54,31 @@ export async function registerAdminBadgeRoutes(app: FastifyInstance) {
       const profile = getProfile(req.params.sub);
       if (!profile) return reply.code(404).send({ error: 'user not found' });
       return profile;
+    });
+
+    // Remove a user from the worker DB (cascades to their badge grants). Use after
+    // deleting them in Authentik — otherwise an active user is re-added on next sign-in.
+    admin.delete<{ Params: { sub: string } }>('/api/admin/users/:sub', async (req, reply) => {
+      const { sub } = req.params;
+      if (!getUser(sub)) return reply.code(404).send({ error: 'user not found' });
+      deleteUser(sub);
+      return { ok: true };
+    });
+
+    // Approve a pending friend code → it becomes the user's live, displayed flair.
+    admin.post<{ Params: { sub: string } }>('/api/admin/users/:sub/flair/approve', async (req, reply) => {
+      const { sub } = req.params;
+      if (!getUser(sub)) return reply.code(404).send({ error: 'user not found' });
+      approveFlair(sub);
+      return { ok: true, profile: getProfile(sub) };
+    });
+
+    // Reject a pending friend code → clears the request, live flair untouched.
+    admin.post<{ Params: { sub: string } }>('/api/admin/users/:sub/flair/reject', async (req, reply) => {
+      const { sub } = req.params;
+      if (!getUser(sub)) return reply.code(404).send({ error: 'user not found' });
+      rejectFlair(sub);
+      return { ok: true, profile: getProfile(sub) };
     });
 
     // Grant a badge to a user. The user must have signed in at least once (so a

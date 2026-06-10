@@ -1,6 +1,10 @@
 import { config } from './config';
 
-export type NotifyEvent = 'submission.created' | 'submission.approved' | 'submission.rejected';
+export type NotifyEvent =
+  | 'submission.created'
+  | 'submission.approved'
+  | 'submission.rejected'
+  | 'flair.requested';
 
 export interface SubmissionInfo {
   id: string;
@@ -14,6 +18,7 @@ const META: Record<NotifyEvent, { title: (label: string) => string; tags: string
   'submission.created':  { title: (l) => `New ${l} combination submitted for approval!`, tags: ['inbox_tray'],       priority: 3 },
   'submission.approved': { title: (l) => `${l} combination approved!`,                   tags: ['white_check_mark'], priority: 3 },
   'submission.rejected': { title: (l) => `${l} combination rejected!`,                   tags: ['x'],               priority: 3 },
+  'flair.requested':     { title: ()  => `New friend code submitted for approval!`,      tags: ['handshake'],        priority: 3 },
 };
 
 // Extracts "Chroma" / "Glass" from summaries like "Chroma: Frog1 + Frog2 → Result".
@@ -28,6 +33,7 @@ export function notify(event: NotifyEvent, sub: SubmissionInfo): void {
   const enabled =
     event === 'submission.created'  ? on.submit  :
     event === 'submission.approved' ? on.approve :
+    event === 'flair.requested'     ? on.submit  : // reuse the "new thing to review" toggle
     on.reject;
 
   if (!enabled || webhookUrls.length === 0) return;
@@ -44,7 +50,11 @@ export function notify(event: NotifyEvent, sub: SubmissionInfo): void {
       'X-Tags':       meta.tags.join(','),
     };
 
-    if (adminUrl) headers['X-Click'] = `${adminUrl}/admin/submissions`;
+    if (adminUrl) {
+      headers['X-Click'] = event === 'flair.requested'
+        ? `${adminUrl}/admin/badges`
+        : `${adminUrl}/admin/submissions`;
+    }
 
     if (url.username) {
       headers['Authorization'] = `Basic ${btoa(`${url.username}:${url.password}`)}`;
