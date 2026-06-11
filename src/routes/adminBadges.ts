@@ -4,7 +4,7 @@ import {
   listBadges, getBadge, upsertBadge, deleteBadge,
   listUsers, getUser, getProfile, deleteUser,
   listFlairRequests, markFlairSent, clearFlairRequest,
-  grantBadge, revokeBadge, badgesForUser,
+  setFlair, grantBadge, revokeBadge, badgesForUser,
 } from '../users';
 
 // Admin-only management of the badge catalog and per-user grants. Gated by the
@@ -103,6 +103,18 @@ export async function registerAdminBadgeRoutes(app: FastifyInstance) {
       clearFlairRequest(sub);
       return { ok: true, profile: getProfile(sub) };
     });
+
+    // Admin directly sets or clears a user's approved friend code (bypasses workflow).
+    admin.put<{ Params: { sub: string }; Body: { flair?: string | null } }>(
+      '/api/admin/users/:sub/flair',
+      async (req, reply) => {
+        const { sub } = req.params;
+        if (!getUser(sub)) return reply.code(404).send({ error: 'user not found' });
+        const flair = typeof req.body?.flair === 'string' ? req.body.flair.trim() || null : null;
+        setFlair(sub, flair);
+        return getProfile(sub);
+      },
+    );
 
     // Grant a badge to a user. The user must have signed in at least once (so a
     // row exists), and the badge must exist — the FK would reject otherwise.

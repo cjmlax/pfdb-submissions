@@ -123,6 +123,7 @@ const stmts = {
            flair_passphrase = NULL, flair_requested_at = NULL
      WHERE sub = @sub
   `),
+  setFlair: db.prepare(`UPDATE users SET flair = @flair WHERE sub = @sub`),
   listFlairRequests: db.prepare(`
     SELECT * FROM users WHERE flair_status IS NOT NULL ORDER BY flair_requested_at ASC
   `),
@@ -200,6 +201,12 @@ export function confirmFlairCode(sub: string, passphrase: string): boolean {
   if (passphrase.trim().toLowerCase() !== user.flair_passphrase.trim().toLowerCase()) return false;
   stmts.publishFlair.run({ sub });
   return true;
+}
+
+// Admin directly sets (or clears) a user's approved friend code, bypassing the
+// submission workflow. Any active request is left untouched.
+export function setFlair(sub: string, flair: string | null): void {
+  stmts.setFlair.run({ sub, flair });
 }
 
 // Every user with an active friend-code request, oldest first (queue order).
