@@ -7,7 +7,7 @@ import { config } from '../config';
 import { queries, uploadsDir, listBySubmitter } from '../db';
 import { resolveTableId } from '../teable';
 import { requireUser, optionalUser } from '../userAuth';
-import { upsertUser, setFlairPending, getProfile } from '../users';
+import { upsertUser, submitFlairRequest, clearFlairRequest, confirmFlairCode, getProfile } from '../users';
 import { getHandler, listHandlers } from '../handlers/registry';
 import { notify } from '../notify';
 import { broadcastSse } from '../sse';
@@ -67,26 +67,48 @@ export async function registerPublicRoutes(app: FastifyInstance) {
     return getProfile(sub);
   });
 
-  // Lets a user submit their in-game Friend Code as flair. It is held PENDING and
-  // does not go live until an admin approves it (after an off-line confirmation).
-  // An empty value withdraws a pending request. Capped and trimmed.
-  app.patch<{ Body: { flair?: string | null } }>(
-    '/api/me',
+  // Submit an in-game Friend Code for review. Held as a 'pending' request; the
+  // admin sends the in-game friend request and sets a confirmation passphrase,
+  // then the user confirms (below) to publish it. Capped and trimmed.
+  app.post<{ Body: { code?: string } }>(
+    '/api/me/flair',
     { preHandler: requireUser },
-    async (req) => {
+    async (req, reply) => {
       const { sub, username } = req.user!;
       upsertUser(sub, username);
-      const raw = typeof req.body?.flair === 'string' ? req.body.flair.trim().slice(0, 80) : '';
-      setFlairPending(sub, raw || null);
-      if (raw) {
-        notify('flair.requested', {
-          id: sub,
-          type: 'flair',
-          summary: `Friend code: ${raw} — from ${username ?? sub}`,
-          createdAt: new Date().toISOString(),
-        });
-      }
+      const code = typeof req.body?.code === 'string' ? req.body.code.trim().slice(0, 80) : '';
+      if (!code) return reply.code(400).send({ error: 'A friend code is required.' });
+      submitFlairRequest(sub, code);
+      notify('flair.requested', {
+        id: sub,
+        type: 'flair',
+        summary: `Friend code: ${code} — from ${username ?? sub}`,
+        createdAt: new Date().toISOString(),
+      });
       return getProfile(sub);
+    },
+  );
+
+  // Cancel/withdraw an active friend-code request at any stage. Live flair untouched.
+  app.delete('/api/me/flair', { preHandler: requireUser }, async (req) => {
+    const { sub, username } = req.user!;
+    upsertUser(sub, username);
+    clearFlairRequest(sub);
+    return getProfile(sub);
+  });
+
+  // Confirm a 'sent' request with the passphrase the admin provided out-of-band.
+  // On a (case-insensitive) match the friend code is published to the live flair.
+  app.post<{ Body: { passphrase?: string } }>(
+    '/api/me/flair/confirm',
+    { preHandler: requireUser },
+    async (req, reply) => {
+      const { sub, username } = req.user!;
+      upsertUser(sub, username);
+      const passphrase = typeof req.body?.passphrase === 'string' ? req.body.passphrase : '';
+      if (!passphrase.trim()) return reply.code(400).send({ error: 'Enter the confirmation code.' });
+      const ok = confirmFlairCode(sub, passphrase);
+      return reply.send({ ok, profile: getProfile(sub) });
     },
   );
 

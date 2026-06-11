@@ -2,7 +2,8 @@ import type { FastifyInstance } from 'fastify';
 import { requireUserAdmin } from '../userAuth';
 import {
   listBadges, getBadge, upsertBadge, deleteBadge,
-  listUsers, getUser, getProfile, deleteUser, approveFlair, rejectFlair,
+  listUsers, getUser, getProfile, deleteUser,
+  listFlairRequests, markFlairSent, clearFlairRequest,
   grantBadge, revokeBadge, badgesForUser,
 } from '../users';
 
@@ -65,19 +66,41 @@ export async function registerAdminBadgeRoutes(app: FastifyInstance) {
       return { ok: true };
     });
 
-    // Approve a pending friend code → it becomes the user's live, displayed flair.
-    admin.post<{ Params: { sub: string } }>('/api/admin/users/:sub/flair/approve', async (req, reply) => {
-      const { sub } = req.params;
-      if (!getUser(sub)) return reply.code(404).send({ error: 'user not found' });
-      approveFlair(sub);
-      return { ok: true, profile: getProfile(sub) };
-    });
+    // ── Friend-code (flair) requests ───────────────────────────────────────
+    // The review queue: every user with an active request, oldest first. Includes
+    // the admin-set passphrase so the reviewer can recall what they sent.
+    admin.get('/api/admin/flair-requests', async () =>
+      listFlairRequests().map(u => ({
+        sub: u.sub,
+        username: u.username,
+        code: u.flair_pending,
+        status: u.flair_status,
+        passphrase: u.flair_passphrase,
+        requestedAt: u.flair_requested_at,
+      })),
+    );
 
-    // Reject a pending friend code → clears the request, live flair untouched.
-    admin.post<{ Params: { sub: string } }>('/api/admin/users/:sub/flair/reject', async (req, reply) => {
+    // Mark the in-game friend request as Sent and record the confirmation passphrase
+    // the user must echo back. Only valid while the request is still 'pending'.
+    admin.post<{ Params: { sub: string }; Body: { passphrase?: string } }>(
+      '/api/admin/flair-requests/:sub/sent',
+      async (req, reply) => {
+        const { sub } = req.params;
+        const passphrase = (req.body?.passphrase ?? '').trim();
+        if (!passphrase) return reply.code(400).send({ error: 'A confirmation code is required.' });
+        if (!getUser(sub)) return reply.code(404).send({ error: 'user not found' });
+        if (!markFlairSent(sub, passphrase)) {
+          return reply.code(409).send({ error: 'Request is not pending (already sent or cleared).' });
+        }
+        return { ok: true, profile: getProfile(sub) };
+      },
+    );
+
+    // Deny a friend-code request at any stage → clears it; live flair untouched.
+    admin.post<{ Params: { sub: string } }>('/api/admin/flair-requests/:sub/deny', async (req, reply) => {
       const { sub } = req.params;
       if (!getUser(sub)) return reply.code(404).send({ error: 'user not found' });
-      rejectFlair(sub);
+      clearFlairRequest(sub);
       return { ok: true, profile: getProfile(sub) };
     });
 

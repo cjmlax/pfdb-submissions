@@ -50,11 +50,7 @@ export function notify(event: NotifyEvent, sub: SubmissionInfo): void {
       'X-Tags':       meta.tags.join(','),
     };
 
-    if (adminUrl) {
-      headers['X-Click'] = event === 'flair.requested'
-        ? `${adminUrl}/admin/badges`
-        : `${adminUrl}/admin/submissions`;
-    }
+    if (adminUrl) headers['X-Click'] = `${adminUrl}/admin/submissions`;
 
     if (url.username) {
       headers['Authorization'] = `Basic ${btoa(`${url.username}:${url.password}`)}`;

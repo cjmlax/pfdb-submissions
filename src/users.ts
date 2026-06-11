@@ -4,13 +4,23 @@ import { db } from './db';
 // Authentik subject ('sub') — the stable, opaque per-user id from the OIDC token,
 // not a username (which can change). Shares the submissions SQLite connection.
 
+// Friend-code (flair) request state machine:
+//   null      → no active request (flair may hold an approved code)
+//   'pending' → user submitted a code, waiting for the admin to send the in-game
+//               friend request and set a confirmation passphrase
+//   'sent'    → admin sent it; user must enter the matching passphrase to publish
+export type FlairStatus = 'pending' | 'sent' | null;
+
 export interface UserRow {
   sub: string;
-  username: string | null;      // cached preferred_username, for display/admin convenience
-  flair: string | null;         // APPROVED in-game friend code, shown next to the user
-  flair_pending: string | null; // submitted friend code awaiting admin approval (null if none)
-  created_at: string;           // ISO — first time we saw this user
-  last_seen: string;            // ISO — refreshed on each profile fetch
+  username: string | null;        // cached preferred_username, for display/admin convenience
+  flair: string | null;           // APPROVED in-game friend code, shown next to the user
+  flair_pending: string | null;   // requested friend code while a request is active
+  flair_status: FlairStatus;      // request state (see above); null when no active request
+  flair_passphrase: string | null;// admin-set confirmation code (compared case-insensitively); never sent to the owner
+  flair_requested_at: string | null; // ISO time the user submitted the request
+  created_at: string;             // ISO — first time we saw this user
+  last_seen: string;              // ISO — refreshed on each profile fetch
 }
 
 export interface BadgeRow {
@@ -23,23 +33,28 @@ export interface BadgeRow {
   created_at: string;
 }
 
-// What the SPA consumes: a user plus their earned badges.
+// What the SPA consumes: a user plus their earned badges. Note the passphrase is
+// deliberately NOT included — the owner must learn it out-of-band to confirm.
 export interface PublicProfile {
   sub: string;
   username: string | null;
   flair: string | null;         // approved friend code (displayed)
-  flair_pending: string | null; // friend code awaiting approval (shown to the owner/admin)
+  flair_pending: string | null; // requested friend code while a request is active
+  flair_status: FlairStatus;    // drives the Account page UI state
   badges: BadgeRow[];
 }
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
-    sub           TEXT PRIMARY KEY,
-    username      TEXT,
-    flair         TEXT,
-    flair_pending TEXT,
-    created_at    TEXT NOT NULL,
-    last_seen     TEXT NOT NULL
+    sub                TEXT PRIMARY KEY,
+    username           TEXT,
+    flair              TEXT,
+    flair_pending      TEXT,
+    flair_status       TEXT,
+    flair_passphrase   TEXT,
+    flair_requested_at TEXT,
+    created_at         TEXT NOT NULL,
+    last_seen          TEXT NOT NULL
   );
 
   CREATE TABLE IF NOT EXISTS badges (
@@ -64,11 +79,14 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_user_badges_sub ON user_badges(sub);
 `);
 
-// Migrate older databases that predate the pending-flair column.
+// Migrate older databases that predate the friend-code workflow columns.
 const userCols = new Set(
   (db.prepare(`PRAGMA table_info(users)`).all() as { name: string }[]).map(c => c.name),
 );
-if (!userCols.has('flair_pending')) db.exec(`ALTER TABLE users ADD COLUMN flair_pending TEXT`);
+if (!userCols.has('flair_pending'))      db.exec(`ALTER TABLE users ADD COLUMN flair_pending TEXT`);
+if (!userCols.has('flair_status'))       db.exec(`ALTER TABLE users ADD COLUMN flair_status TEXT`);
+if (!userCols.has('flair_passphrase'))   db.exec(`ALTER TABLE users ADD COLUMN flair_passphrase TEXT`);
+if (!userCols.has('flair_requested_at')) db.exec(`ALTER TABLE users ADD COLUMN flair_requested_at TEXT`);
 
 const stmts = {
   upsertUser: db.prepare(`
@@ -82,10 +100,32 @@ const stmts = {
   listUsers:  db.prepare(`SELECT * FROM users ORDER BY last_seen DESC`),
   deleteUser: db.prepare(`DELETE FROM users WHERE sub = ?`),
 
-  // Friend-code (flair) submission + approval workflow.
-  setFlairPending: db.prepare(`UPDATE users SET flair_pending = @flair WHERE sub = @sub`),
-  approveFlair:    db.prepare(`UPDATE users SET flair = flair_pending, flair_pending = NULL WHERE sub = @sub`),
-  rejectFlair:     db.prepare(`UPDATE users SET flair_pending = NULL WHERE sub = @sub`),
+  // Friend-code (flair) submission → send → passphrase-confirm workflow.
+  submitFlair: db.prepare(`
+    UPDATE users
+       SET flair_pending = @code, flair_status = 'pending',
+           flair_passphrase = NULL, flair_requested_at = @now
+     WHERE sub = @sub
+  `),
+  clearFlairRequest: db.prepare(`
+    UPDATE users
+       SET flair_pending = NULL, flair_status = NULL,
+           flair_passphrase = NULL, flair_requested_at = NULL
+     WHERE sub = @sub
+  `),
+  markFlairSent: db.prepare(`
+    UPDATE users SET flair_status = 'sent', flair_passphrase = @passphrase
+     WHERE sub = @sub AND flair_status = 'pending'
+  `),
+  publishFlair: db.prepare(`
+    UPDATE users
+       SET flair = flair_pending, flair_pending = NULL, flair_status = NULL,
+           flair_passphrase = NULL, flair_requested_at = NULL
+     WHERE sub = @sub
+  `),
+  listFlairRequests: db.prepare(`
+    SELECT * FROM users WHERE flair_status IS NOT NULL ORDER BY flair_requested_at ASC
+  `),
 
   listBadges: db.prepare(`SELECT * FROM badges ORDER BY sort_order, name`),
   getBadge:   db.prepare(`SELECT * FROM badges WHERE id = ?`),
@@ -133,28 +173,38 @@ export function listUsers(): UserRow[] {
   return stmts.listUsers.all() as UserRow[];
 }
 
-// A user submits a friend code for review — it's held in flair_pending and does
-// NOT change their live flair until an admin approves it. Passing null/empty
-// clears a pending request (e.g. the user withdrew it).
-export function setFlairPending(sub: string, flair: string | null): void {
-  stmts.setFlairPending.run({ sub, flair });
+// User submits a friend code → state becomes 'pending'. Live flair is untouched;
+// any previously-set passphrase is cleared. Replaces an existing request.
+export function submitFlairRequest(sub: string, code: string): void {
+  stmts.submitFlair.run({ sub, code, now: new Date().toISOString() });
 }
 
-// Admin approves the pending friend code: it becomes the live, displayed flair
-// and the pending slot is cleared.
-export function approveFlair(sub: string): void {
-  stmts.approveFlair.run({ sub });
+// Clears any active request (user cancels, or admin denies). Live flair untouched.
+export function clearFlairRequest(sub: string): void {
+  stmts.clearFlairRequest.run({ sub });
 }
 
-// Admin rejects the pending friend code: the pending slot is cleared, the live
-// flair is left untouched.
-export function rejectFlair(sub: string): void {
-  stmts.rejectFlair.run({ sub });
+// Admin marks the in-game friend request as Sent and records the confirmation
+// passphrase the user must echo back. Only valid from 'pending'; returns whether
+// a row actually transitioned (false if the request wasn't pending).
+export function markFlairSent(sub: string, passphrase: string): boolean {
+  return stmts.markFlairSent.run({ sub, passphrase }).changes > 0;
 }
 
-// Everyone with a friend code awaiting approval, most-recently-seen first.
-export function listPendingFlair(): UserRow[] {
-  return listUsers().filter(u => u.flair_pending != null && u.flair_pending !== '');
+// User confirms with a passphrase. If the request is 'sent' and the value matches
+// (case-insensitively), the friend code is published to their live flair and the
+// request is cleared; returns true. Otherwise returns false and nothing changes.
+export function confirmFlairCode(sub: string, passphrase: string): boolean {
+  const user = getUser(sub);
+  if (!user || user.flair_status !== 'sent' || !user.flair_passphrase) return false;
+  if (passphrase.trim().toLowerCase() !== user.flair_passphrase.trim().toLowerCase()) return false;
+  stmts.publishFlair.run({ sub });
+  return true;
+}
+
+// Every user with an active friend-code request, oldest first (queue order).
+export function listFlairRequests(): UserRow[] {
+  return stmts.listFlairRequests.all() as UserRow[];
 }
 
 // Removes a user and (via ON DELETE CASCADE) their badge grants. Note this only
@@ -173,6 +223,7 @@ export function getProfile(sub: string): PublicProfile | null {
     username: user.username,
     flair: user.flair,
     flair_pending: user.flair_pending,
+    flair_status: user.flair_status,
     badges: badgesForUser(sub),
   };
 }
