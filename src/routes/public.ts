@@ -8,6 +8,7 @@ import { queries, uploadsDir, listBySubmitter } from '../db';
 import { resolveTableId } from '../teable';
 import { requireUser, optionalUser } from '../userAuth';
 import { upsertUser, submitFlairRequest, clearFlairRequest, confirmFlairCode, getProfile } from '../users';
+import { listActiveAlerts } from '../alerts';
 import { getHandler, listHandlers } from '../handlers/registry';
 import { notify } from '../notify';
 import { broadcastSse } from '../sse';
@@ -57,6 +58,17 @@ export async function registerPublicRoutes(app: FastifyInstance) {
   // Advertises the accepted submission types (handy for the website / debugging).
   app.get('/api/types', async () =>
     listHandlers().map((h) => ({ type: h.type, label: h.label, acceptsScreenshot: !!h.acceptsScreenshot })),
+  );
+
+  // Active site-wide announcement banners, newest first. Public — no auth, so
+  // the SPA can show maintenance/outage notices to anonymous visitors too.
+  app.get('/api/alerts', async () =>
+    listActiveAlerts().map(a => ({
+      id: a.id,
+      message: a.message,
+      level: a.level,
+      createdAt: a.created_at,
+    })),
   );
 
   // The signed-in user's own profile. Records/refreshes the user on every call
