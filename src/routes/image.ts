@@ -12,10 +12,14 @@ import { resolveTableId } from '../teable';
 // (table + record + field) that never expires; on every hit it re-fetches the
 // single record (public, unauthenticated on this Teable instance) for a fresh
 // presignedUrl and streams the bytes back same-origin.
-const TABLE_NAMES: Record<string, string> = {
-  breeds: 'Breeds',
-  chroma: 'Chroma Combinations',
-  glass:  'Glass Combinations',
+// Each table's frontend fetcher uses a different fieldKeyType convention
+// (fetchTable → dbFieldName, fetchCombos → display name), and the field param
+// the SPA sends matches whichever one it reads locally — so this proxy must
+// query Teable the same way per table, or the field key won't match.
+const TABLE_CONFIG: Record<string, { name: string; fieldKeyType: 'dbFieldName' | 'name' }> = {
+  breeds: { name: 'Breeds',               fieldKeyType: 'dbFieldName' },
+  chroma: { name: 'Chroma Combinations',  fieldKeyType: 'name' },
+  glass:  { name: 'Glass Combinations',   fieldKeyType: 'name' },
 };
 
 interface AttachmentEntry {
@@ -30,19 +34,19 @@ export async function registerImageRoutes(app: FastifyInstance) {
     { config: { rateLimit: { max: 600, timeWindow: '1 minute' } } },
     async (req, reply) => {
       const { table, recordId, field } = req.params;
-      const tableName = TABLE_NAMES[table];
-      if (!tableName) return reply.code(404).send({ error: 'unknown table' });
+      const tableCfg = TABLE_CONFIG[table];
+      if (!tableCfg) return reply.code(404).send({ error: 'unknown table' });
 
       let tableId: string;
       try {
-        tableId = await resolveTableId(tableName);
+        tableId = await resolveTableId(tableCfg.name);
       } catch {
         return reply.code(502).send({ error: 'Could not reach the database. Please try again.' });
       }
 
       const recordUrl =
         `${config.teable.baseUrl}/api/table/${tableId}/record/${encodeURIComponent(recordId)}` +
-        `?fieldKeyType=dbFieldName`;
+        `?fieldKeyType=${tableCfg.fieldKeyType}`;
       let recordRes: Response;
       try {
         recordRes = await fetch(recordUrl, { headers: { Accept: 'application/json' } });
