@@ -79,6 +79,24 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_user_badges_sub ON user_badges(sub);
 `);
 
+// Auto-managed "Admin" badge, kept in sync with live PFDB admin-group membership
+// (see syncAdminBadge, called from userAuth.verify on every authenticated request).
+// Seeded once via INSERT OR IGNORE so admins can freely re-style it afterward
+// (name/icon/color) from the Admin Badges page without a restart undoing it.
+export const ADMIN_BADGE_ID = 'admin';
+db.prepare(`
+  INSERT OR IGNORE INTO badges (id, name, description, icon, color, sort_order, created_at)
+  VALUES (@id, @name, @description, @icon, @color, @sort_order, @created_at)
+`).run({
+  id: ADMIN_BADGE_ID,
+  name: 'Admin',
+  description: 'Member of the PFDB admin group.',
+  icon: '🛡️',
+  color: '#e74c3c',
+  sort_order: -1000,
+  created_at: new Date().toISOString(),
+});
+
 // Migrate older databases that predate the friend-code workflow columns.
 const userCols = new Set(
   (db.prepare(`PRAGMA table_info(users)`).all() as { name: string }[]).map(c => c.name),
@@ -282,4 +300,17 @@ export function revokeBadge(sub: string, badgeId: string): void {
 
 export function badgesForUser(sub: string): BadgeRow[] {
   return stmts.badgesForUser.all(sub) as BadgeRow[];
+}
+
+// Grants/revokes the auto-managed Admin badge to match live PFDB admin-group
+// membership, called on every verified request (see userAuth.verify). This is
+// what makes the badge self-healing — no manual grant/revoke ever needed.
+// No-ops if the user hasn't been recorded yet (their next /api/me call upserts
+// them and syncs on the following request) or if the badge catalog entry was
+// deleted (avoids a grantBadge FK failure).
+export function syncAdminBadge(sub: string, isAdmin: boolean): void {
+  if (!getUser(sub) || !getBadge(ADMIN_BADGE_ID)) return;
+  const has = badgesForUser(sub).some(b => b.id === ADMIN_BADGE_ID);
+  if (isAdmin && !has) grantBadge(sub, ADMIN_BADGE_ID, 'system');
+  else if (!isAdmin && has) revokeBadge(sub, ADMIN_BADGE_ID);
 }
