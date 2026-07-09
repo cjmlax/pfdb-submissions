@@ -4,7 +4,7 @@ import {
   listBadges, getBadge, upsertBadge, deleteBadge,
   listUsers, getUser, getProfile, deleteUser,
   listFlairRequests, markFlairSent, clearFlairRequest,
-  setFlair, grantBadge, revokeBadge, badgesForUser,
+  setFlair, grantBadge, revokeBadge, badgesForUser, AUTO_BADGE_IDS,
 } from '../users';
 
 // Admin-only management of the badge catalog and per-user grants. Gated by the
@@ -36,9 +36,14 @@ export async function registerAdminBadgeRoutes(app: FastifyInstance) {
       return { ok: true, badge: getBadge(id) };
     });
 
-    // Delete a badge (cascades to remove all its grants).
+    // Delete a badge (cascades to remove all its grants). Auto-managed badges
+    // (Admin, Mod) are exempt — deleting one would silently disable its group
+    // sync until the worker restarts (that's the only time it re-seeds).
     admin.delete<{ Params: { id: string } }>('/api/admin/badges/:id', async (req, reply) => {
       const { id } = req.params;
+      if (AUTO_BADGE_IDS.includes(id)) {
+        return reply.code(400).send({ error: 'This badge is auto-managed and cannot be deleted.' });
+      }
       if (!getBadge(id)) return reply.code(404).send({ error: 'badge not found' });
       deleteBadge(id);
       return { ok: true };

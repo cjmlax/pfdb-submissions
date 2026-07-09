@@ -7,7 +7,7 @@ import { config } from '../config';
 import { queries, uploadsDir, listBySubmitter } from '../db';
 import { resolveTableId } from '../teable';
 import { requireUser, optionalUser } from '../userAuth';
-import { upsertUser, submitFlairRequest, clearFlairRequest, confirmFlairCode, getProfile } from '../users';
+import { upsertUser, submitFlairRequest, clearFlairRequest, clearFlair, confirmFlairCode, getProfile, getUser } from '../users';
 import { listActiveAlerts } from '../alerts';
 import { getHandler, listHandlers } from '../handlers/registry';
 import { notify } from '../notify';
@@ -101,11 +101,15 @@ export async function registerPublicRoutes(app: FastifyInstance) {
     },
   );
 
-  // Cancel/withdraw an active friend-code request at any stage. Live flair untouched.
+  // Cancel/withdraw an active request, or — if there's no active request — clear
+  // an already-approved live Friend Code. Same "remove my code" action from the
+  // user's perspective; which one applies depends on their current state.
   app.delete('/api/me/flair', { preHandler: requireUser }, async (req) => {
     const { sub, username } = req.user!;
     upsertUser(sub, username);
-    clearFlairRequest(sub);
+    const user = getUser(sub);
+    if (user?.flair_status) clearFlairRequest(sub);
+    else clearFlair(sub);
     return getProfile(sub);
   });
 

@@ -1,7 +1,7 @@
 import type { FastifyRequest, preHandlerHookHandler } from 'fastify';
 import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from 'jose';
 import { config } from './config';
-import { syncAdminBadge } from './users';
+import { syncGroupBadge, ADMIN_BADGE_ID, MOD_BADGE_ID } from './users';
 
 // Identifies a regular (non-admin) signed-in user from the public SPA. The SPA
 // sends its OIDC **id_token** as a Bearer token; we verify the signature against
@@ -56,9 +56,10 @@ async function verify(req: FastifyRequest): Promise<FastifyRequest['user'] | nul
       : typeof payload.name === 'string' ? payload.name
       : null;
 
-    // Self-healing: sync the auto-managed Admin badge to this request's live
-    // group claim, so it's granted/revoked without any manual admin action.
-    syncAdminBadge(sub, groups.includes(config.userAuth.adminGroup));
+    // Self-healing: sync the auto-managed Admin/Mod badges to this request's
+    // live group claims, so they're granted/revoked without any manual action.
+    syncGroupBadge(sub, ADMIN_BADGE_ID, groups.includes(config.userAuth.adminGroup));
+    syncGroupBadge(sub, MOD_BADGE_ID, groups.includes(config.userAuth.modGroup));
 
     return { sub, username, groups };
   } catch {
