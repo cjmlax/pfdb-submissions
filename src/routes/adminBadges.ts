@@ -73,7 +73,7 @@ export async function registerAdminBadgeRoutes(app: FastifyInstance) {
 
     // ── Friend-code (flair) requests ───────────────────────────────────────
     // The review queue: every user with an active request, oldest first. Includes
-    // the admin-set passphrase so the reviewer can recall what they sent.
+    // the admin-set passphrase and sender code so the reviewer can recall what they sent.
     admin.get('/api/admin/flair-requests', async () =>
       listFlairRequests().map(u => ({
         sub: u.sub,
@@ -81,20 +81,24 @@ export async function registerAdminBadgeRoutes(app: FastifyInstance) {
         code: u.flair_pending,
         status: u.flair_status,
         passphrase: u.flair_passphrase,
+        senderCode: u.flair_sender_code,
         requestedAt: u.flair_requested_at,
       })),
     );
 
     // Mark the in-game friend request as Sent and record the confirmation passphrase
-    // the user must echo back. Only valid while the request is still 'pending'.
-    admin.post<{ Params: { sub: string }; Body: { passphrase?: string } }>(
+    // the user must echo back, plus the sender's own Friend Code (shown to the user
+    // so they can verify who the gift is from). Only valid while still 'pending'.
+    admin.post<{ Params: { sub: string }; Body: { passphrase?: string; senderCode?: string } }>(
       '/api/admin/flair-requests/:sub/sent',
       async (req, reply) => {
         const { sub } = req.params;
         const passphrase = (req.body?.passphrase ?? '').trim();
+        const senderCode = (req.body?.senderCode ?? '').trim();
         if (!passphrase) return reply.code(400).send({ error: 'A confirmation code is required.' });
+        if (!senderCode) return reply.code(400).send({ error: 'Your Friend Code is required.' });
         if (!getUser(sub)) return reply.code(404).send({ error: 'user not found' });
-        if (!markFlairSent(sub, passphrase)) {
+        if (!markFlairSent(sub, passphrase, senderCode)) {
           return reply.code(409).send({ error: 'Request is not pending (already sent or cleared).' });
         }
         return { ok: true, profile: getProfile(sub) };

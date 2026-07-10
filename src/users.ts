@@ -18,6 +18,8 @@ export interface UserRow {
   flair_pending: string | null;   // requested friend code while a request is active
   flair_status: FlairStatus;      // request state (see above); null when no active request
   flair_passphrase: string | null;// admin-set confirmation code (compared case-insensitively); never sent to the owner
+  flair_sender_code: string | null; // the admin/mod's own Friend Code, set alongside flair_passphrase, so
+                                     // the recipient can verify who the in-game gift is coming from
   flair_requested_at: string | null; // ISO time the user submitted the request
   created_at: string;             // ISO — first time we saw this user
   last_seen: string;              // ISO — refreshed on each profile fetch
@@ -41,6 +43,7 @@ export interface PublicProfile {
   flair: string | null;         // approved friend code (displayed)
   flair_pending: string | null; // requested friend code while a request is active
   flair_status: FlairStatus;    // drives the Account page UI state
+  flair_sender_code: string | null; // sender's Friend Code, shown while confirming a 'sent' gift
   badges: BadgeRow[];
 }
 
@@ -108,6 +111,7 @@ const userCols = new Set(
 if (!userCols.has('flair_pending'))      db.exec(`ALTER TABLE users ADD COLUMN flair_pending TEXT`);
 if (!userCols.has('flair_status'))       db.exec(`ALTER TABLE users ADD COLUMN flair_status TEXT`);
 if (!userCols.has('flair_passphrase'))   db.exec(`ALTER TABLE users ADD COLUMN flair_passphrase TEXT`);
+if (!userCols.has('flair_sender_code'))  db.exec(`ALTER TABLE users ADD COLUMN flair_sender_code TEXT`);
 if (!userCols.has('flair_requested_at')) db.exec(`ALTER TABLE users ADD COLUMN flair_requested_at TEXT`);
 
 const stmts = {
@@ -126,13 +130,13 @@ const stmts = {
   submitFlair: db.prepare(`
     UPDATE users
        SET flair_pending = @code, flair_status = 'pending',
-           flair_passphrase = NULL, flair_requested_at = @now
+           flair_passphrase = NULL, flair_sender_code = NULL, flair_requested_at = @now
      WHERE sub = @sub
   `),
   clearFlairRequest: db.prepare(`
     UPDATE users
        SET flair_pending = NULL, flair_status = NULL,
-           flair_passphrase = NULL, flair_requested_at = NULL
+           flair_passphrase = NULL, flair_sender_code = NULL, flair_requested_at = NULL
      WHERE sub = @sub
   `),
   // Like clearFlairRequest, but also wipes an already-approved live flair —
@@ -140,17 +144,19 @@ const stmts = {
   clearFlair: db.prepare(`
     UPDATE users
        SET flair = NULL, flair_pending = NULL, flair_status = NULL,
-           flair_passphrase = NULL, flair_requested_at = NULL
+           flair_passphrase = NULL, flair_sender_code = NULL, flair_requested_at = NULL
      WHERE sub = @sub
   `),
+  // senderCode is the sending admin/mod's own Friend Code, shown to the
+  // recipient so they can verify who the in-game gift is coming from.
   markFlairSent: db.prepare(`
-    UPDATE users SET flair_status = 'sent', flair_passphrase = @passphrase
+    UPDATE users SET flair_status = 'sent', flair_passphrase = @passphrase, flair_sender_code = @senderCode
      WHERE sub = @sub AND flair_status = 'pending'
   `),
   publishFlair: db.prepare(`
     UPDATE users
        SET flair = flair_pending, flair_pending = NULL, flair_status = NULL,
-           flair_passphrase = NULL, flair_requested_at = NULL
+           flair_passphrase = NULL, flair_sender_code = NULL, flair_requested_at = NULL
      WHERE sub = @sub
   `),
   setFlair: db.prepare(`UPDATE users SET flair = @flair WHERE sub = @sub`),
@@ -223,10 +229,11 @@ export function clearFlair(sub: string): void {
 }
 
 // Admin marks the in-game friend request as Sent and records the confirmation
-// passphrase the user must echo back. Only valid from 'pending'; returns whether
-// a row actually transitioned (false if the request wasn't pending).
-export function markFlairSent(sub: string, passphrase: string): boolean {
-  return stmts.markFlairSent.run({ sub, passphrase }).changes > 0;
+// passphrase the user must echo back, plus the sending admin/mod's own Friend
+// Code (so the recipient can verify who the gift is from). Only valid from
+// 'pending'; returns whether a row actually transitioned.
+export function markFlairSent(sub: string, passphrase: string, senderCode: string): boolean {
+  return stmts.markFlairSent.run({ sub, passphrase, senderCode }).changes > 0;
 }
 
 // User confirms with a passphrase. If the request is 'sent' and the value matches
@@ -268,6 +275,7 @@ export function getProfile(sub: string): PublicProfile | null {
     flair: user.flair,
     flair_pending: user.flair_pending,
     flair_status: user.flair_status,
+    flair_sender_code: user.flair_sender_code,
     badges: badgesForUser(sub),
   };
 }
