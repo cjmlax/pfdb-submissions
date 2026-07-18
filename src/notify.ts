@@ -52,10 +52,14 @@ export function notify(event: NotifyEvent, sub: SubmissionInfo): void {
 
     if (adminUrl) headers['X-Click'] = `${adminUrl}/admin/submissions`;
 
-    if (url.username) {
+    if (url.username && url.password) {
       headers['Authorization'] = `Basic ${btoa(`${url.username}:${url.password}`)}`;
       url.username = '';
       url.password = '';
+    } else if (url.username) {
+      // Token auth: https://<token>@ntfy.example.com/topic
+      headers['Authorization'] = `Bearer ${url.username}`;
+      url.username = '';
     }
 
     fetch(url.toString(), {
