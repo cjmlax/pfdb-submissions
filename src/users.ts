@@ -80,6 +80,15 @@ db.exec(`
     FOREIGN KEY (badge_id) REFERENCES badges(id)  ON DELETE CASCADE
   );
   CREATE INDEX IF NOT EXISTS idx_user_badges_sub ON user_badges(sub);
+
+  CREATE TABLE IF NOT EXISTS user_weekly_completions (
+    sub           TEXT NOT NULL,
+    weekly_set_id TEXT NOT NULL,
+    completed_at  TEXT NOT NULL,
+    PRIMARY KEY (sub, weekly_set_id),
+    FOREIGN KEY (sub) REFERENCES users(sub) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_user_weekly_completions_sub ON user_weekly_completions(sub);
 `);
 
 // Auto-managed badges, kept in sync with live PFDB group membership (see
@@ -190,6 +199,18 @@ const stmts = {
     WHERE ub.sub = ?
     ORDER BY b.sort_order, b.name
   `),
+
+  markWeeklyCompleted: db.prepare(`
+    INSERT INTO user_weekly_completions (sub, weekly_set_id, completed_at)
+    VALUES (@sub, @weekly_set_id, @completed_at)
+    ON CONFLICT(sub, weekly_set_id) DO NOTHING
+  `),
+  clearWeeklyCompleted: db.prepare(`
+    DELETE FROM user_weekly_completions WHERE sub = @sub AND weekly_set_id = @weekly_set_id
+  `),
+  completedWeeklySetIds: db.prepare(`
+    SELECT weekly_set_id FROM user_weekly_completions WHERE sub = ?
+  `).pluck(),
 };
 
 // ── Users ────────────────────────────────────────────────────────────────────
@@ -341,4 +362,22 @@ export function syncGroupBadge(sub: string, badgeId: string, inGroup: boolean): 
   const has = badgesForUser(sub).some(b => b.id === badgeId);
   if (inGroup && !has) grantBadge(sub, badgeId, 'system');
   else if (!inGroup && has) revokeBadge(sub, badgeId);
+}
+
+// ── Weekly Set completions ──────────────────────────────────────────────────
+// Per-user, per-set "completed" flag (checkbox column on the Weekly Sets
+// table). weeklySetId is the Teable record id of the set — no server-side
+// validation that it's a real row, since a bogus id is scoped to the owner's
+// own list and harmless.
+
+export function markWeeklyCompleted(sub: string, weeklySetId: string): void {
+  stmts.markWeeklyCompleted.run({ sub, weekly_set_id: weeklySetId, completed_at: new Date().toISOString() });
+}
+
+export function clearWeeklyCompleted(sub: string, weeklySetId: string): void {
+  stmts.clearWeeklyCompleted.run({ sub, weekly_set_id: weeklySetId });
+}
+
+export function completedWeeklySetIds(sub: string): string[] {
+  return stmts.completedWeeklySetIds.all(sub) as string[];
 }

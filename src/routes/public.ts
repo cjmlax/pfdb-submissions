@@ -7,7 +7,10 @@ import { config } from '../config';
 import { queries, uploadsDir, listBySubmitter } from '../db';
 import { resolveTableId } from '../teable';
 import { requireUser, optionalUser } from '../userAuth';
-import { upsertUser, submitFlairRequest, clearFlairRequest, clearFlair, confirmFlairCode, getProfile, getUser } from '../users';
+import {
+  upsertUser, submitFlairRequest, clearFlairRequest, clearFlair, confirmFlairCode, getProfile, getUser,
+  markWeeklyCompleted, clearWeeklyCompleted, completedWeeklySetIds,
+} from '../users';
 import { listActiveAlerts } from '../alerts';
 import { getHandler, listHandlers } from '../handlers/registry';
 import { notify } from '../notify';
@@ -125,6 +128,36 @@ export async function registerPublicRoutes(app: FastifyInstance) {
       if (!passphrase.trim()) return reply.code(400).send({ error: 'Enter the confirmation code.' });
       const ok = confirmFlairCode(sub, passphrase);
       return reply.send({ ok, profile: getProfile(sub) });
+    },
+  );
+
+  // The signed-in user's completed Weekly Sets — Teable record ids, used to
+  // render the checkbox column and "hide completed" filter client-side.
+  app.get('/api/me/weekly-completions', { preHandler: requireUser }, async (req) => {
+    const { sub, username } = req.user!;
+    upsertUser(sub, username);
+    return completedWeeklySetIds(sub);
+  });
+
+  app.put<{ Params: { id: string } }>(
+    '/api/me/weekly-completions/:id',
+    { preHandler: requireUser },
+    async (req) => {
+      const { sub, username } = req.user!;
+      upsertUser(sub, username);
+      markWeeklyCompleted(sub, req.params.id);
+      return completedWeeklySetIds(sub);
+    },
+  );
+
+  app.delete<{ Params: { id: string } }>(
+    '/api/me/weekly-completions/:id',
+    { preHandler: requireUser },
+    async (req) => {
+      const { sub, username } = req.user!;
+      upsertUser(sub, username);
+      clearWeeklyCompleted(sub, req.params.id);
+      return completedWeeklySetIds(sub);
     },
   );
 
