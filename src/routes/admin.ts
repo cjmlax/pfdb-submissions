@@ -2,7 +2,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import type { FastifyInstance } from 'fastify';
 import { compressImage, cropImage } from '../imageProcess';
-import { getById, listByStatus, queries, deleteById, uploadsDir, type SubmissionRow } from '../db';
+import { getById, listByStatus, listPendingInBatch, queries, deleteById, uploadsDir, type SubmissionRow } from '../db';
 import { getHandler } from '../handlers/registry';
 import { requireUserAdmin } from '../userAuth';
 import { notify } from '../notify';
@@ -33,7 +33,50 @@ function toDto(r: SubmissionRow) {
     submitter: r.submitter_name, // null → anonymous submission
     screenshot: r.screenshot ? `/api/admin/uploads/${r.screenshot}` : null,
     createdAt: r.created_at,
+    batchId: r.batch_id,
   };
+}
+
+// Pushes one pending submission downstream and records the outcome on its row:
+// 'pushed' with the downstream ref, or 'error' with the message kept.
+async function approveRow(row: SubmissionRow): Promise<{ ok: true; ref: string | null } | { ok: false; error: string }> {
+  const handler = getHandler(row.type);
+  if (!handler) return { ok: false, error: `no handler for type "${row.type}"` };
+  try {
+    const payload = JSON.parse(row.payload);
+    const screenshotPath = row.screenshot ? path.join(uploadsDir, row.screenshot) : null;
+    const ref = (await handler.pushDown(payload, {
+      screenshotPath,
+      submitterSub: row.submitter_sub,
+      submitterName: row.submitter_name,
+    })) || null;
+    queries.setStatus.run({
+      id: row.id, status: 'pushed', reviewer_note: null, reviewed_at: new Date().toISOString(), pushed_ref: ref,
+    });
+    return { ok: true, ref };
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    queries.setStatus.run({
+      id: row.id, status: 'error', reviewer_note: message, reviewed_at: new Date().toISOString(), pushed_ref: null,
+    });
+    return { ok: false, error: message };
+  }
+}
+
+// Deletes a submission and its screenshot (rejections aren't retained).
+function discardRow(row: SubmissionRow): void {
+  if (row.screenshot) {
+    const p = path.join(uploadsDir, row.screenshot);
+    if (fs.existsSync(p)) fs.unlinkSync(p);
+  }
+  deleteById(row.id);
+}
+
+// Notification text for a group action: "12 of 12 approved: …first few…".
+function batchSummary(done: SubmissionRow[], total: number, verb: string): string {
+  const shown = done.slice(0, 10).map(r => r.summary).join('\n');
+  const more = done.length > 10 ? `\n…and ${done.length - 10} more` : '';
+  return `${done.length} of ${total} ${verb}:\n${shown}${more}`;
 }
 
 // Submission review API. Gated by the SPA bearer-token admin check so the React
@@ -63,32 +106,49 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       if (!row) return reply.code(404).send({ error: 'not found' });
       if (row.status !== 'pending') return reply.code(409).send({ error: `already ${row.status}` });
 
-      const handler = getHandler(row.type);
-      if (!handler) return reply.code(500).send({ error: `no handler for type "${row.type}"` });
-
-      try {
-        const payload = JSON.parse(row.payload);
-        const screenshotPath = row.screenshot ? path.join(uploadsDir, row.screenshot) : null;
-        const ref = (await handler.pushDown(payload, {
-          screenshotPath,
-          submitterSub: row.submitter_sub,
-          submitterName: row.submitter_name,
-        })) || null;
-        queries.setStatus.run({
-          id, status: 'pushed', reviewer_note: null, reviewed_at: new Date().toISOString(), pushed_ref: ref,
-        });
-        req.log.info({ id, ref }, 'submission pushed');
-        notify('submission.approved', { id: row.id, type: row.type, summary: row.summary, submitterNote: row.submitter_note, createdAt: row.created_at });
-        broadcastSse('submission', { id, action: 'approved' });
-        return { ok: true, pushed_ref: ref };
-      } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
-        queries.setStatus.run({
-          id, status: 'error', reviewer_note: message, reviewed_at: new Date().toISOString(), pushed_ref: null,
-        });
-        req.log.error({ id, err: message }, 'push failed');
-        return reply.code(502).send({ error: 'push failed', detail: message });
+      const result = await approveRow(row);
+      if (!result.ok) {
+        req.log.error({ id, err: result.error }, 'push failed');
+        return reply.code(502).send({ error: 'push failed', detail: result.error });
       }
+      req.log.info({ id, ref: result.ref }, 'submission pushed');
+      notify('submission.approved', { id: row.id, type: row.type, summary: row.summary, submitterNote: row.submitter_note, createdAt: row.created_at });
+      broadcastSse('submission', { id, action: 'approved' });
+      return { ok: true, pushed_ref: result.ref };
+    });
+
+    // Approve every still-pending item of a batch, one at a time. Failures are
+    // recorded per item (as with a single approve) and don't stop the rest.
+    admin.post<{ Params: { batchId: string } }>('/api/admin/batch/:batchId/approve', async (req, reply) => {
+      const rows = listPendingInBatch(req.params.batchId);
+      if (rows.length === 0) return reply.code(404).send({ error: 'no pending items in this batch' });
+
+      const results: { id: string; summary: string; ok: boolean; error?: string }[] = [];
+      for (const row of rows) {
+        const r = await approveRow(row);
+        results.push(r.ok ? { id: row.id, summary: row.summary, ok: true } : { id: row.id, summary: row.summary, ok: false, error: r.error });
+        broadcastSse('submission', { id: row.id, action: r.ok ? 'approved' : 'error' });
+      }
+
+      const pushed = rows.filter((_, i) => results[i].ok);
+      req.log.info({ batchId: req.params.batchId, pushed: pushed.length, total: rows.length }, 'batch approved');
+      if (pushed.length > 0) {
+        notify('submission.approved', { id: pushed[0].id, type: pushed[0].type, summary: batchSummary(pushed, rows.length, 'approved'), createdAt: pushed[0].created_at });
+      }
+      return { ok: true, results };
+    });
+
+    // Reject → discard every still-pending item of a batch.
+    admin.post<{ Params: { batchId: string } }>('/api/admin/batch/:batchId/reject', async (req, reply) => {
+      const rows = listPendingInBatch(req.params.batchId);
+      if (rows.length === 0) return reply.code(404).send({ error: 'no pending items in this batch' });
+
+      for (const row of rows) {
+        discardRow(row);
+        broadcastSse('submission', { id: row.id, action: 'rejected' });
+      }
+      notify('submission.rejected', { id: rows[0].id, type: rows[0].type, summary: batchSummary(rows, rows.length, 'rejected'), createdAt: rows[0].created_at });
+      return { ok: true, count: rows.length };
     });
 
     // Edit → update payload and/or screenshot, leave status as pending.
@@ -175,11 +235,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       const row = getById(id);
       if (!row) return reply.code(404).send({ error: 'not found' });
 
-      if (row.screenshot) {
-        const p = path.join(uploadsDir, row.screenshot);
-        if (fs.existsSync(p)) fs.unlinkSync(p);
-      }
-      deleteById(id);
+      discardRow(row);
 
       notify('submission.rejected', { id, type: row.type, summary: row.summary, submitterNote: row.submitter_note, createdAt: row.created_at });
       broadcastSse('submission', { id, action: 'rejected' });

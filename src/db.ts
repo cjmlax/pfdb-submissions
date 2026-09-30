@@ -20,6 +20,7 @@ export interface SubmissionRow {
   created_at: string; // ISO
   reviewed_at: string | null;
   pushed_ref: string | null; // Teable record id after a successful push
+  batch_id: string | null; // shared by every row from one batch submit
 }
 
 export const uploadsDir = path.join(config.dataDir, 'uploads');
@@ -44,7 +45,8 @@ db.exec(`
     source_ip      TEXT,
     created_at     TEXT NOT NULL,
     reviewed_at    TEXT,
-    pushed_ref     TEXT
+    pushed_ref     TEXT,
+    batch_id       TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_submissions_status ON submissions(status, created_at);
 `);
@@ -55,6 +57,7 @@ const submissionCols = new Set(
 );
 if (!submissionCols.has('submitter_sub'))  db.exec(`ALTER TABLE submissions ADD COLUMN submitter_sub TEXT`);
 if (!submissionCols.has('submitter_name')) db.exec(`ALTER TABLE submissions ADD COLUMN submitter_name TEXT`);
+if (!submissionCols.has('batch_id'))       db.exec(`ALTER TABLE submissions ADD COLUMN batch_id TEXT`);
 
 // Rejected submissions are no longer retained — purge any left by older versions
 // (and their screenshot files) so the table only holds live/approved records.
@@ -68,12 +71,13 @@ db.exec(`DELETE FROM submissions WHERE status = 'rejected'`);
 export const queries = {
   insert: db.prepare(`
     INSERT INTO submissions
-      (id, type, payload, status, summary, screenshot, submitter_note, submitter_sub, submitter_name, source_ip, created_at)
+      (id, type, payload, status, summary, screenshot, submitter_note, submitter_sub, submitter_name, source_ip, created_at, batch_id)
     VALUES
-      (@id, @type, @payload, 'pending', @summary, @screenshot, @submitter_note, @submitter_sub, @submitter_name, @source_ip, @created_at)
+      (@id, @type, @payload, 'pending', @summary, @screenshot, @submitter_note, @submitter_sub, @submitter_name, @source_ip, @created_at, @batch_id)
   `),
   byId: db.prepare(`SELECT * FROM submissions WHERE id = ?`),
   listByStatus: db.prepare(`SELECT * FROM submissions WHERE status = ? ORDER BY created_at DESC`),
+  pendingInBatch: db.prepare(`SELECT * FROM submissions WHERE batch_id = ? AND status = 'pending' ORDER BY summary`),
   listBySubmitter: db.prepare(`SELECT * FROM submissions WHERE submitter_sub = ? ORDER BY created_at DESC`),
   setStatus: db.prepare(`
     UPDATE submissions
@@ -92,6 +96,11 @@ export const queries = {
        AND status = 'pending'
   `),
   deleteById: db.prepare(`DELETE FROM submissions WHERE id = ?`),
+  pendingPayloadValues: db.prepare(`
+    SELECT DISTINCT json_extract(payload, '$.' || @key) AS v
+      FROM submissions
+     WHERE type = @type AND status = 'pending'
+  `),
 };
 
 export function getById(id: string): SubmissionRow | undefined {
@@ -102,8 +111,20 @@ export function listByStatus(status: Status): SubmissionRow[] {
   return queries.listByStatus.all(status) as SubmissionRow[];
 }
 
+export function listPendingInBatch(batchId: string): SubmissionRow[] {
+  return queries.pendingInBatch.all(batchId) as SubmissionRow[];
+}
+
 export function listBySubmitter(sub: string): SubmissionRow[] {
   return queries.listBySubmitter.all(sub) as SubmissionRow[];
+}
+
+// Distinct values of one payload key across a type's pending submissions — e.g.
+// the frog ids that already have a stats submission awaiting review.
+export function pendingPayloadValues(type: string, key: string): string[] {
+  return (queries.pendingPayloadValues.all({ type, key }) as { v: unknown }[])
+    .map(r => r.v)
+    .filter((v): v is string => typeof v === 'string');
 }
 
 export function deleteById(id: string): void {

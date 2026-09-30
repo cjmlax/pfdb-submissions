@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import { schedule as cronSchedule } from 'node-cron';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { config } from '../config';
-import { queries, uploadsDir, listBySubmitter } from '../db';
+import { db, queries, uploadsDir, listBySubmitter, pendingPayloadValues } from '../db';
 import { resolveTableId } from '../teable';
 import { requireUser, optionalUser } from '../userAuth';
 import {
@@ -49,6 +49,28 @@ function saveState(state: Map<string, ExportEntry>): void {
 }
 
 const exportState = loadState();
+
+// Most items one batch submit may carry. Sized to comfortably cover every frog
+// currently missing stats, while bounding the Teable lookups one request makes.
+const MAX_BATCH = 500;
+
+function hashIp(ip: string): string {
+  return createHash('sha256').update(`${ip}|${config.ipHashSecret}`).digest('hex').slice(0, 16);
+}
+
+// Runs fn over items with at most `limit` in flight, preserving order.
+async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
 
 const IMAGE_EXT: Record<string, string> = {
   'image/png': 'png',
@@ -251,10 +273,7 @@ export async function registerPublicRoutes(app: FastifyInstance) {
 
       // Surface the attribution link (if any) in the review note column.
       const data = parsed.data as { sourceLink?: string };
-      const ipHash = createHash('sha256')
-        .update(`${req.ip}|${config.ipHashSecret}`)
-        .digest('hex')
-        .slice(0, 16);
+      const ipHash = hashIp(req.ip);
 
       const summary = handler.summarize(parsed.data);
       const createdAt = new Date().toISOString();
@@ -270,6 +289,7 @@ export async function registerPublicRoutes(app: FastifyInstance) {
         submitter_name: req.user?.username ?? null,
         source_ip: ipHash,
         created_at: createdAt,
+        batch_id: null,
       });
 
       // Also record the user in the directory so the admin can badge them later.
@@ -279,6 +299,101 @@ export async function registerPublicRoutes(app: FastifyInstance) {
       notify('submission.created', { id, type: handler.type, summary, submitterNote: data.sourceLink, createdAt });
       broadcastSse('submission', { id, type: handler.type, summary });
       return reply.send({ ok: true, id });
+    },
+  );
+
+  // Frog ids that already have a stats submission awaiting review, so the
+  // website can hide them from the missing-stats list.
+  app.get('/api/frog-stats/pending', async () => pendingPayloadValues('frogStats', 'frogId'));
+
+  // Submits many items of one type in a single request (JSON, no screenshot).
+  // Each item becomes its own pending submission, reviewed independently; the
+  // response reports per-item acceptance so the website can show what was
+  // refused and why. Body: { type, payloads: [...], hp_url }.
+  app.post<{ Body: { type?: unknown; payloads?: unknown; hp_url?: unknown } }>(
+    '/api/submit/batch',
+    { preHandler: optionalUser, config: { rateLimit: { max: 20, timeWindow: '10 minutes' } } },
+    async (req, reply) => {
+      const body = req.body ?? {};
+
+      // Honeypot tripped → pretend success and silently drop.
+      if (typeof body.hp_url === 'string' && body.hp_url.trim() !== '') return reply.send({ ok: true, results: [] });
+
+      const handler = getHandler(typeof body.type === 'string' ? body.type : '');
+      if (!handler) return reply.code(400).send({ error: 'unknown submission type' });
+
+      const payloads = body.payloads;
+      if (!Array.isArray(payloads) || payloads.length === 0) {
+        return reply.code(400).send({ error: 'nothing to submit' });
+      }
+      if (payloads.length > MAX_BATCH) {
+        return reply.code(400).send({ error: `too many items (max ${MAX_BATCH})` });
+      }
+
+      const checked = await mapLimit(payloads, 8, async (raw): Promise<{ data: unknown } | { error: string }> => {
+        const parsed = handler.schema.safeParse(raw);
+        if (!parsed.success) {
+          return { error: parsed.error.issues.map(i => `${i.path.join('.') || 'item'}: ${i.message}`).join('; ') };
+        }
+        try {
+          await handler.preSubmit?.(parsed.data);
+        } catch (e) {
+          return { error: e instanceof Error ? e.message : 'Submission not allowed.' };
+        }
+        return { data: parsed.data };
+      });
+
+      const createdAt = new Date().toISOString();
+      const ipHash = hashIp(req.ip);
+      const batchId = randomUUID();
+      const seen = new Set<string>();
+      const results: ({ index: number; ok: true; id: string } | { index: number; ok: false; error: string })[] = [];
+      const rows: { id: string; summary: string; [col: string]: unknown }[] = [];
+      const summaries: string[] = [];
+
+      checked.forEach((c, index) => {
+        if ('error' in c) { results.push({ index, ok: false, error: c.error }); return; }
+        const key = handler.dedupeKey?.(c.data);
+        if (key !== undefined) {
+          if (seen.has(key)) { results.push({ index, ok: false, error: 'Duplicate of another item in this submission.' }); return; }
+          seen.add(key);
+        }
+        const id = randomUUID();
+        const summary = handler.summarize(c.data);
+        rows.push({
+          id,
+          type: handler.type,
+          payload: JSON.stringify(c.data),
+          summary,
+          screenshot: null,
+          submitter_note: null,
+          submitter_sub: req.user?.sub ?? null,
+          submitter_name: req.user?.username ?? null,
+          source_ip: ipHash,
+          created_at: createdAt,
+          batch_id: batchId,
+        });
+        summaries.push(summary);
+        results.push({ index, ok: true, id });
+      });
+
+      if (rows.length > 0) {
+        db.transaction(() => { for (const r of rows) queries.insert.run(r); })();
+        if (req.user) upsertUser(req.user.sub, req.user.username);
+
+        req.log.info({ type: handler.type, count: rows.length, submitter: req.user?.username ?? null }, 'batch submission received');
+        const shown = summaries.slice(0, 10).join('\n');
+        const more = summaries.length > 10 ? `\n…and ${summaries.length - 10} more` : '';
+        notify('submission.created', {
+          id: rows[0].id,
+          type: handler.type,
+          summary: summaries.length === 1 ? summaries[0] : `${summaries.length} submissions:\n${shown}${more}`,
+          createdAt,
+        });
+        for (const r of rows) broadcastSse('submission', { id: r.id, type: handler.type, summary: r.summary });
+      }
+
+      return reply.send({ ok: true, results });
     },
   );
 

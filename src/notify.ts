@@ -1,4 +1,5 @@
 import { config } from './config';
+import { getHandler } from './handlers/registry';
 
 export type NotifyEvent =
   | 'submission.created'
@@ -15,16 +16,21 @@ export interface SubmissionInfo {
 }
 
 const META: Record<NotifyEvent, { title: (label: string) => string; tags: string[]; priority: number }> = {
-  'submission.created':  { title: (l) => `New ${l} combination submitted for approval!`, tags: ['inbox_tray'],       priority: 3 },
-  'submission.approved': { title: (l) => `${l} combination approved!`,                   tags: ['white_check_mark'], priority: 3 },
-  'submission.rejected': { title: (l) => `${l} combination rejected!`,                   tags: ['x'],               priority: 3 },
-  'flair.requested':     { title: ()  => `New friend code submitted for approval!`,      tags: ['handshake'],        priority: 3 },
+  'submission.created':  { title: (l) => `New ${l} submitted for approval!`,        tags: ['inbox_tray'],       priority: 3 },
+  'submission.approved': { title: (l) => `${l} approved!`,                          tags: ['white_check_mark'], priority: 3 },
+  'submission.rejected': { title: (l) => `${l} rejected!`,                          tags: ['x'],               priority: 3 },
+  'flair.requested':     { title: ()  => `New friend code submitted for approval!`, tags: ['handshake'],        priority: 3 },
 };
 
-// Extracts "Chroma" / "Glass" from summaries like "Chroma: Frog1 + Frog2 → Result".
-function variantLabel(summary: string): string {
-  const colon = summary.indexOf(':');
-  return colon > 0 ? summary.slice(0, colon).trim() : summary;
+// Names the kind of submission for the title. Combos read "Chroma combination" /
+// "Glass combination", pulled from summaries like "Chroma: Frog1 + Frog2 → Result";
+// other types use their handler's label.
+function kindLabel(sub: SubmissionInfo): string {
+  if (sub.type === 'combo') {
+    const colon = sub.summary.indexOf(':');
+    return `${colon > 0 ? sub.summary.slice(0, colon).trim() : 'Special'} combination`;
+  }
+  return getHandler(sub.type)?.label ?? sub.type;
 }
 
 export function notify(event: NotifyEvent, sub: SubmissionInfo): void {
@@ -39,7 +45,7 @@ export function notify(event: NotifyEvent, sub: SubmissionInfo): void {
   if (!enabled || webhookUrls.length === 0) return;
 
   const meta = META[event];
-  const label = variantLabel(sub.summary);
+  const label = kindLabel(sub);
 
   for (const rawUrl of webhookUrls) {
     const url = new URL(rawUrl);

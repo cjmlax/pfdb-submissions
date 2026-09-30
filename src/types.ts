@@ -1,4 +1,4 @@
-import type { ZodType } from 'zod';
+import type { ZodType, ZodTypeDef } from 'zod';
 
 // Context passed to a handler when an approved submission is pushed downstream.
 export interface PushContext {
@@ -23,10 +23,13 @@ export interface SubmissionHandler<P = unknown> {
   // Whether the public form may attach a screenshot for this type.
   acceptsScreenshot?: boolean;
   // Validates the raw payload from the website. Rejected at submit time.
-  schema: ZodType<P>;
+  schema: ZodType<P, ZodTypeDef, unknown>;
   // Optional async check run after schema validation but before the row is stored.
   // Throw an Error with a user-facing message to reject the submission (→ HTTP 409).
   preSubmit?(payload: P): Promise<void>;
+  // Optional identity for batch submits: two items in one batch with the same
+  // key are duplicates, and only the first is accepted.
+  dedupeKey?(payload: P): string;
   // One-line summary shown in the review list.
   summarize(payload: P): string;
   // Pushes an approved submission to its destination (e.g. a Teable table).

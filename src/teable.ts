@@ -160,6 +160,40 @@ export async function teableBuildLookupMap(
   return map;
 }
 
+// Fetches one record's fields keyed by field id. Returns null if it doesn't exist.
+export async function teableGetRecordById(
+  tableId: string,
+  recordId: string,
+): Promise<Record<string, unknown> | null> {
+  const url = `${config.teable.baseUrl}/api/table/${tableId}/record/${encodeURIComponent(recordId)}?fieldKeyType=id`;
+  const res = await fetch(url, { headers: authHeader() });
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Teable record fetch failed (${res.status}): ${text.slice(0, 300)}`);
+  }
+  const data = (await res.json()) as { fields?: Record<string, unknown> };
+  return data.fields ?? {};
+}
+
+// Updates fields on an existing record, keyed by field id.
+export async function teableUpdateRecordById(
+  tableId: string,
+  recordId: string,
+  fieldsById: Record<string, unknown>,
+): Promise<void> {
+  const url = `${config.teable.baseUrl}/api/table/${tableId}/record/${encodeURIComponent(recordId)}`;
+  const res = await fetch(url, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...authHeader() },
+    body: JSON.stringify({ fieldKeyType: 'id', record: { fields: fieldsById } }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Teable update failed (${res.status}): ${text.slice(0, 500)}`);
+  }
+}
+
 // Creates a record using field IDs (fieldKeyType: 'id'), so the keys are not
 // sensitive to display-name renames. Returns the new record id.
 export async function teableCreateRecordById(

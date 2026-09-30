@@ -66,11 +66,15 @@ the `pfdb-submissions-data` volume.
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
 | POST | `/api/submit` | public (rate-limited) | accept a submission |
+| POST | `/api/submit/batch` | public (rate-limited) | accept many items of one type (JSON, no screenshot); per-item results |
+| GET  | `/api/frog-stats/pending` | public | frog ids with a stats submission awaiting review |
 | GET  | `/api/types` | public | list accepted submission types |
 | GET  | `/api/admin/` | admin | web review page |
 | GET  | `/api/admin/pending` | admin | pending queue as JSON |
 | POST | `/api/admin/:id/approve` | admin | push downstream |
 | POST | `/api/admin/:id/reject` | admin | reject with optional note |
+| POST | `/api/admin/batch/:batchId/approve` | admin | push every pending item of a batch; per-item results |
+| POST | `/api/admin/batch/:batchId/reject` | admin | discard every pending item of a batch |
 | GET  | `/healthz` | public | health check |
 
 ## Reviewing without the web UI
