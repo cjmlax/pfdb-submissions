@@ -103,7 +103,16 @@ export async function teableFieldValueExists(
   fieldId: string,
   value: string,
 ): Promise<boolean> {
-  const filter = JSON.stringify({ conjunction: 'and', filterSet: [{ fieldId, operator: 'is', value }] });
+  return teableRecordMatches(tableId, { [fieldId]: value });
+}
+
+// Returns true if any record matches every fieldId → exact value pair (AND).
+export async function teableRecordMatches(
+  tableId: string,
+  valuesByFieldId: Record<string, string>,
+): Promise<boolean> {
+  const filterSet = Object.entries(valuesByFieldId).map(([fieldId, value]) => ({ fieldId, operator: 'is', value }));
+  const filter = JSON.stringify({ conjunction: 'and', filterSet });
   const url = `${config.teable.baseUrl}/api/table/${tableId}/record?fieldKeyType=id&take=1&filter=${encodeURIComponent(filter)}`;
   const res = await fetch(url, { headers: authHeader() });
   if (!res.ok) {

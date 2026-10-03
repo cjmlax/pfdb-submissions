@@ -60,9 +60,7 @@ export const config = {
   },
 
   changelog: {
-    // Absolute path to changelog.json in the web root (SMB build output).
-    // Leave empty to disable the iTunes poller.
-    path: opt('CHANGELOG_PATH', ''),
+    // iTunes poller writes new iOS versions to the Teable "Changelog" table.
     pollCron: opt('CHANGELOG_POLL_CRON', '0 6 * * *'), // daily at 6 AM
   },
 

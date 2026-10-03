@@ -1,14 +1,7 @@
-import fs from 'node:fs';
 import { schedule as cronSchedule } from 'node-cron';
 import type { FastifyInstance } from 'fastify';
 import { config } from '../config';
-
-interface ChangelogEntry {
-  version: string;
-  date: string;
-  platform: 'ios' | 'android' | 'both';
-  notes: string;
-}
+import { resolveTableId, teableCreateRecordById, teableRecordMatches } from '../teable';
 
 interface ItunesResult {
   version: string;
@@ -18,17 +11,12 @@ interface ItunesResult {
 
 const ITUNES_ID = '386644958';
 
-function loadChangelog(): ChangelogEntry[] {
-  try {
-    return JSON.parse(fs.readFileSync(config.changelog.path, 'utf8')) as ChangelogEntry[];
-  } catch {
-    return [];
-  }
-}
-
-function saveChangelog(entries: ChangelogEntry[]): void {
-  fs.writeFileSync(config.changelog.path, JSON.stringify(entries, null, 2) + '\n');
-}
+const VERSION_FIELD_ID  = 'fldUhvklcsbChGy9GFQ'; // primary — not unique; Version + Platform identifies an entry
+const DATE_FIELD_ID     = 'fldo9XCT2GpX8srHYsJ';
+const PLATFORM_FIELD_ID = 'fldFnsLWl4pbH1HWl56'; // single select: Both / iOS / Android
+const VISIBLE_FIELD_ID  = 'fldmzgjllfJU8aFXao7';
+const SOURCE_FIELD_ID   = 'fldcIBT2eT22GpT0wzW'; // single select: iTunes Poller / Manual
+const NOTES_FIELD_ID    = 'fldEf3IlPMbDRhgkVJl';
 
 async function pollItunes(log: FastifyInstance['log']): Promise<void> {
   try {
@@ -44,31 +32,32 @@ async function pollItunes(log: FastifyInstance['log']): Promise<void> {
       return;
     }
 
-    const entries = loadChangelog();
-    if (entries[0]?.version === r.version) {
-      log.info('iTunes poll: version unchanged, skipping');
+    const tableId = await resolveTableId('Changelog');
+    const exists = await teableRecordMatches(tableId, {
+      [VERSION_FIELD_ID]:  r.version,
+      [PLATFORM_FIELD_ID]: 'iOS',
+    });
+    if (exists) {
+      log.info(`iTunes poll: v${r.version} (iOS) already recorded`);
       return;
     }
 
-    entries.unshift({
-      version: r.version,
-      date: r.currentVersionReleaseDate,
-      platform: 'ios',
-      notes: r.releaseNotes ?? '',
+    await teableCreateRecordById(tableId, {
+      [VERSION_FIELD_ID]:  r.version,
+      [DATE_FIELD_ID]:     r.currentVersionReleaseDate,
+      [PLATFORM_FIELD_ID]: 'iOS',
+      [VISIBLE_FIELD_ID]:  true,
+      [SOURCE_FIELD_ID]:   'iTunes Poller',
+      [NOTES_FIELD_ID]:    r.releaseNotes ?? '',
     });
-    saveChangelog(entries);
     log.info(`iTunes poll: recorded v${r.version}`);
   } catch (err) {
-    log.warn({ err }, 'iTunes poll: fetch failed');
+    log.warn({ err }, 'iTunes poll: failed');
   }
 }
 
 export function registerItunesPoller(log: FastifyInstance['log']): void {
-  if (!config.changelog.path) {
-    log.info('iTunes poller disabled — set CHANGELOG_PATH to enable');
-    return;
-  }
   setTimeout(() => pollItunes(log), 20_000);
   cronSchedule(config.changelog.pollCron, () => pollItunes(log));
-  log.info(`iTunes poller scheduled — cron=${config.changelog.pollCron}, path=${config.changelog.path}`);
+  log.info(`iTunes poller scheduled — cron=${config.changelog.pollCron}`);
 }
