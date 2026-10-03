@@ -26,7 +26,7 @@ export interface UserRow {
 }
 
 export interface BadgeRow {
-  id: string;               // slug, e.g. 'founder'
+  id: string;               // slug, e.g. 'admin'
   name: string;
   description: string | null;
   icon: string | null;      // emoji or short icon token
