@@ -1,7 +1,7 @@
 import { schedule as cronSchedule } from 'node-cron';
 import type { FastifyInstance } from 'fastify';
 import { config } from '../config';
-import { resolveTableId, teableCreateRecordById, teableRecordMatches } from '../teable';
+import { resolveTableId, teableCreateRecordById, teableFieldValueExists } from '../teable';
 
 interface ItunesResult {
   version: string;
@@ -11,7 +11,7 @@ interface ItunesResult {
 
 const ITUNES_ID = '386644958';
 
-const VERSION_FIELD_ID  = 'fldUhvklcsbChGy9GFQ'; // primary — not unique; Version + Platform identifies an entry
+const VERSION_FIELD_ID  = 'fldUhvklcsbChGy9GFQ'; // primary — not unique across legacy per-platform entries
 const DATE_FIELD_ID     = 'fldo9XCT2GpX8srHYsJ';
 const PLATFORM_FIELD_ID = 'fldFnsLWl4pbH1HWl56'; // single select: Both / iOS / Android
 const VISIBLE_FIELD_ID  = 'fldmzgjllfJU8aFXao7';
@@ -33,19 +33,19 @@ async function pollItunes(log: FastifyInstance['log']): Promise<void> {
     }
 
     const tableId = await resolveTableId('Changelog');
-    const exists = await teableRecordMatches(tableId, {
-      [VERSION_FIELD_ID]:  r.version,
-      [PLATFORM_FIELD_ID]: 'iOS',
-    });
+    // The current app ships one build to both stores, so any existing row for
+    // this version (whatever its platform) means it's already recorded.
+    const exists = await teableFieldValueExists(tableId, VERSION_FIELD_ID, r.version);
     if (exists) {
-      log.info(`iTunes poll: v${r.version} (iOS) already recorded`);
+      log.info(`iTunes poll: v${r.version} already recorded`);
       return;
     }
 
     await teableCreateRecordById(tableId, {
       [VERSION_FIELD_ID]:  r.version,
       [DATE_FIELD_ID]:     r.currentVersionReleaseDate,
-      [PLATFORM_FIELD_ID]: 'iOS',
+      // iTunes is only the polling source — current builds ship to both stores.
+      [PLATFORM_FIELD_ID]: 'Both',
       [VISIBLE_FIELD_ID]:  true,
       [SOURCE_FIELD_ID]:   'iTunes Poller',
       [NOTES_FIELD_ID]:    r.releaseNotes ?? '',
