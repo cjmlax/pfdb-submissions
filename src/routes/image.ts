@@ -16,6 +16,8 @@ import { resolveTableId } from '../teable';
 // (fetchTable → dbFieldName, fetchMutations → display name), and the field param
 // the SPA sends matches whichever one it reads locally — so this proxy must
 // query Teable the same way per table, or the field key won't match.
+// A field can hold several attachments (e.g. a Frog Pairs record keeps one
+// screenshot per mutation); ?i=N picks one by position, defaulting to the first.
 const TABLE_CONFIG: Record<string, { name: string; fieldKeyType: 'dbFieldName' | 'name' }> = {
   breeds: { name: 'Breeds',               fieldKeyType: 'dbFieldName' },
   pairs:  { name: 'Frog Pairs',           fieldKeyType: 'name' },
@@ -28,13 +30,17 @@ interface AttachmentEntry {
 }
 
 export async function registerImageRoutes(app: FastifyInstance) {
-  app.get<{ Params: { table: string; recordId: string; field: string } }>(
+  app.get<{ Params: { table: string; recordId: string; field: string }; Querystring: { i?: string } }>(
     '/api/image/:table/:recordId/:field',
     { config: { rateLimit: { max: 600, timeWindow: '1 minute' } } },
     async (req, reply) => {
       const { table, recordId, field } = req.params;
       const tableCfg = TABLE_CONFIG[table];
       if (!tableCfg) return reply.code(404).send({ error: 'unknown table' });
+      const index = req.query.i === undefined ? 0 : Number(req.query.i);
+      if (!Number.isInteger(index) || index < 0 || index > 50) {
+        return reply.code(400).send({ error: 'invalid attachment index' });
+      }
 
       let tableId: string;
       try {
@@ -57,7 +63,7 @@ export async function registerImageRoutes(app: FastifyInstance) {
 
       const record = (await recordRes.json()) as { fields?: Record<string, unknown> };
       const fieldVal = record.fields?.[field];
-      const entry = (Array.isArray(fieldVal) ? fieldVal[0] : undefined) as AttachmentEntry | undefined;
+      const entry = (Array.isArray(fieldVal) ? fieldVal[index] : undefined) as AttachmentEntry | undefined;
       if (!entry?.presignedUrl) return reply.code(404).send({ error: 'no attachment on this field' });
 
       let imgRes: Response;
@@ -71,7 +77,7 @@ export async function registerImageRoutes(app: FastifyInstance) {
       const buf = Buffer.from(await imgRes.arrayBuffer());
       reply.header('Content-Type', entry.mimetype ?? imgRes.headers.get('content-type') ?? 'application/octet-stream');
       reply.header('Content-Disposition', `inline${entry.name ? `; filename="${entry.name}"` : ''}`);
-      // The proxy URL itself is stable (keyed by record+field), so browsers can
+      // The proxy URL itself is stable (keyed by record+field+index), so browsers can
       // cache the bytes — the underlying attachment rarely changes after upload.
       reply.header('Cache-Control', 'public, max-age=86400');
       return reply.send(buf);
