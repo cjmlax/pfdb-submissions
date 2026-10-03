@@ -8,7 +8,7 @@ import { registerAdminRoutes } from './routes/admin';
 import { registerAdminBadgeRoutes } from './routes/adminBadges';
 import { registerAdminAlertRoutes } from './routes/adminAlerts';
 import { registerImageRoutes } from './routes/image';
-import { registerItunesPoller } from './tasks/itunesPoller';
+import { registerVersionPoller } from './tasks/versionPoller';
 import { registerWeeklySetsPoller } from './tasks/weeklySetsPoller';
 
 async function main() {
@@ -36,7 +36,7 @@ async function main() {
   app.log.info(
     `pfdb-submissions up — data=${config.dataDir}, origins=${config.allowedOrigin.join(',')}`,
   );
-  registerItunesPoller(app.log);
+  registerVersionPoller(app.log);
   registerWeeklySetsPoller(app.log);
 }
 

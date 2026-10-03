@@ -60,7 +60,7 @@ export const config = {
   },
 
   changelog: {
-    // iTunes poller writes new iOS versions to the Teable "Changelog" table.
+    // Version poller writes new iOS/Android versions (from Apptopia) to the Teable "Changelog" table.
     pollCron: opt('CHANGELOG_POLL_CRON', '0 6 * * *'), // daily at 6 AM
   },
 
@@ -75,6 +75,7 @@ export const config = {
       submit:  opt('WEBHOOK_ON_SUBMIT',  'true') !== 'false',
       approve: opt('WEBHOOK_ON_APPROVE', 'true') !== 'false',
       reject:  opt('WEBHOOK_ON_REJECT',  'true') !== 'false',
+      pollerFailure: opt('WEBHOOK_ON_POLLER_FAIL', 'true') !== 'false',
     },
   },
 };

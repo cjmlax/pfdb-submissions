@@ -221,16 +221,18 @@ export async function teableUpdateRecordById(
 }
 
 // Creates a record using field IDs (fieldKeyType: 'id'), so the keys are not
-// sensitive to display-name renames. Returns the new record id.
+// sensitive to display-name renames. Returns the new record id. With typecast,
+// Teable coerces values and adds missing single-select choices.
 export async function teableCreateRecordById(
   tableId: string,
   fieldsById: Record<string, unknown>,
+  opts: { typecast?: boolean } = {},
 ): Promise<string> {
   const url = `${config.teable.baseUrl}/api/table/${tableId}/record`;
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeader() },
-    body: JSON.stringify({ fieldKeyType: 'id', records: [{ fields: fieldsById }] }),
+    body: JSON.stringify({ fieldKeyType: 'id', typecast: opts.typecast, records: [{ fields: fieldsById }] }),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');

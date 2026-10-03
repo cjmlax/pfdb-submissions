@@ -33,30 +33,25 @@ function kindLabel(sub: SubmissionInfo): string {
   return getHandler(sub.type)?.label ?? sub.type;
 }
 
-export function notify(event: NotifyEvent, sub: SubmissionInfo): void {
-  const { webhookUrls, adminUrl, on } = config.notify;
+interface Message {
+  title: string;
+  body: string;
+  tags: string[];
+  priority: number;
+  click?: string;
+}
 
-  const enabled =
-    event === 'submission.created'  ? on.submit  :
-    event === 'submission.approved' ? on.approve :
-    event === 'flair.requested'     ? on.submit  : // reuse the "new thing to review" toggle
-    on.reject;
-
-  if (!enabled || webhookUrls.length === 0) return;
-
-  const meta = META[event];
-  const label = kindLabel(sub);
-
-  for (const rawUrl of webhookUrls) {
+function send(msg: Message): void {
+  for (const rawUrl of config.notify.webhookUrls) {
     const url = new URL(rawUrl);
     const headers: Record<string, string> = {
       'Content-Type': 'text/plain',
-      'X-Title':      meta.title(label),
-      'X-Priority':   String(meta.priority),
-      'X-Tags':       meta.tags.join(','),
+      'X-Title':      msg.title,
+      'X-Priority':   String(msg.priority),
+      'X-Tags':       msg.tags.join(','),
     };
 
-    if (adminUrl) headers['X-Click'] = `${adminUrl}/admin/submissions`;
+    if (msg.click) headers['X-Click'] = msg.click;
 
     if (url.username && url.password) {
       headers['Authorization'] = `Basic ${btoa(`${url.username}:${url.password}`)}`;
@@ -71,9 +66,47 @@ export function notify(event: NotifyEvent, sub: SubmissionInfo): void {
     fetch(url.toString(), {
       method: 'POST',
       headers,
-      body: sub.summary,
+      body: msg.body,
     }).catch((err: Error) => {
       console.error(`[notify] webhook to ${url} failed: ${err.message}`);
     });
   }
+}
+
+// Background pollers (version history, weekly sets) report failures here so
+// they're visible without watching the container logs.
+export function notifyPollerFailure(poller: string, details: string[]): void {
+  const { webhookUrls, on } = config.notify;
+  if (!on.pollerFailure || webhookUrls.length === 0 || details.length === 0) return;
+  send({
+    title:    `${poller} poller failed`,
+    body:     details.join('\n'),
+    tags:     ['warning'],
+    priority: 4,
+  });
+}
+
+export function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+export function notify(event: NotifyEvent, sub: SubmissionInfo): void {
+  const { webhookUrls, adminUrl, on } = config.notify;
+
+  const enabled =
+    event === 'submission.created'  ? on.submit  :
+    event === 'submission.approved' ? on.approve :
+    event === 'flair.requested'     ? on.submit  : // reuse the "new thing to review" toggle
+    on.reject;
+
+  if (!enabled || webhookUrls.length === 0) return;
+
+  const meta = META[event];
+  send({
+    title:    meta.title(kindLabel(sub)),
+    body:     sub.summary,
+    tags:     meta.tags,
+    priority: meta.priority,
+    click:    adminUrl ? `${adminUrl}/admin/submissions` : undefined,
+  });
 }

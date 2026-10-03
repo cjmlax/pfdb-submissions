@@ -1,6 +1,7 @@
 import { schedule as cronSchedule } from 'node-cron';
 import type { FastifyInstance } from 'fastify';
 import { config } from '../config';
+import { errorMessage, notifyPollerFailure } from '../notify';
 import {
   resolveTableId,
   teableCreateRecordById,
@@ -67,17 +68,23 @@ function parseFile(text: string): ParsedSet[] {
   return sets;
 }
 
+// Logs a failure and sends it to the notification webhook(s).
+function fail(log: FastifyInstance['log'], message: string, obj: object = {}): void {
+  log.warn(obj, `Weekly sets poll: ${message}`);
+  notifyPollerFailure('Weekly sets', [message]);
+}
+
 async function pollWeeklySets(log: FastifyInstance['log']): Promise<void> {
   try {
     const res = await fetch(SETS_URL);
     if (!res.ok) {
-      log.warn({ status: res.status }, 'Weekly sets poll: HTTP error');
+      fail(log, `HTTP ${res.status} from ${SETS_URL}`, { status: res.status });
       return;
     }
 
     const sets = parseFile(await res.text());
     if (sets.length === 0) {
-      log.warn('Weekly sets poll: no entries parsed from file');
+      fail(log, 'no entries parsed from file');
       return;
     }
 
@@ -98,7 +105,7 @@ async function pollWeeklySets(log: FastifyInstance['log']): Promise<void> {
     for (const readable of latest.frogs.slice(0, FROG_FIELD_IDS.length)) {
       const id = frogIndex.get(readable);
       if (!id) {
-        log.warn({ readable, week: latest.weekId }, 'Weekly sets poll: unrecognized frog — aborting');
+        fail(log, `unrecognized frog ${readable} in ${latest.weekId} — aborting`, { readable, week: latest.weekId });
         return;
       }
       frogIds.push(id);
@@ -119,7 +126,7 @@ async function pollWeeklySets(log: FastifyInstance['log']): Promise<void> {
     await teableCreateRecordById(tableId, fields);
     log.info(`Weekly sets poll: created ${latest.weekId} "${latest.name}" (chron ${nextChron})`);
   } catch (err) {
-    log.warn({ err }, 'Weekly sets poll: failed');
+    fail(log, `failed: ${errorMessage(err)}`, { err });
   }
 }
 
