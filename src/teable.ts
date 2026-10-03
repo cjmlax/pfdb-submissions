@@ -123,6 +123,23 @@ export async function teableRecordMatches(
   return (data.records?.length ?? 0) > 0;
 }
 
+// Returns records (fields keyed by field id) matching a Teable filter object —
+// which may nest { conjunction, filterSet } groups for AND/OR logic.
+export async function teableFindRecords(
+  tableId: string,
+  filter: object,
+  take = 10,
+): Promise<{ id: string; fields: Record<string, unknown> }[]> {
+  const url = `${config.teable.baseUrl}/api/table/${tableId}/record?fieldKeyType=id&take=${take}&filter=${encodeURIComponent(JSON.stringify(filter))}`;
+  const res = await fetch(url, { headers: authHeader() });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Teable filter query failed (${res.status}): ${text.slice(0, 300)}`);
+  }
+  const data = (await res.json()) as { records?: { id: string; fields?: Record<string, unknown> }[] };
+  return (data.records ?? []).map((r) => ({ id: r.id, fields: r.fields ?? {} }));
+}
+
 // Finds the current maximum numeric value of a field across all records in a table.
 // Used to compute the next sequential value (max + 1) before creating a new record.
 export async function teableGetMaxNumber(tableId: string, fieldId: string): Promise<number> {

@@ -23,8 +23,8 @@ import { compressImage } from '../imageProcess';
 const EXPORT_TABLES: Record<string, { label: string; tableName: string }> = {
   frogs:  { label: 'Frogs',         tableName: 'Froggies' },
   breeds: { label: 'Breeds',        tableName: 'Breeds' },
-  chroma: { label: 'Chroma Combos', tableName: 'Chroma Combinations' },
-  glass:  { label: 'Glass Combos',  tableName: 'Glass Combinations' },
+  pairs:     { label: 'Frog Pairs', tableName: 'Frog Pairs' },
+  mutations: { label: 'Mutations',  tableName: 'Mutations' },
   weekly: { label: 'Weekly Sets',   tableName: 'Weekly Sets' },
 };
 

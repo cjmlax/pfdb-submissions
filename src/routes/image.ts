@@ -13,13 +13,12 @@ import { resolveTableId } from '../teable';
 // single record (public, unauthenticated on this Teable instance) for a fresh
 // presignedUrl and streams the bytes back same-origin.
 // Each table's frontend fetcher uses a different fieldKeyType convention
-// (fetchTable → dbFieldName, fetchCombos → display name), and the field param
+// (fetchTable → dbFieldName, fetchMutations → display name), and the field param
 // the SPA sends matches whichever one it reads locally — so this proxy must
 // query Teable the same way per table, or the field key won't match.
 const TABLE_CONFIG: Record<string, { name: string; fieldKeyType: 'dbFieldName' | 'name' }> = {
   breeds: { name: 'Breeds',               fieldKeyType: 'dbFieldName' },
-  chroma: { name: 'Chroma Combinations',  fieldKeyType: 'name' },
-  glass:  { name: 'Glass Combinations',   fieldKeyType: 'name' },
+  pairs:  { name: 'Frog Pairs',           fieldKeyType: 'name' },
 };
 
 interface AttachmentEntry {

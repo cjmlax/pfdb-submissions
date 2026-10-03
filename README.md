@@ -40,7 +40,7 @@ Copy `.env.example` to `.env` and fill it in. Key variables:
 | `ADMIN_GROUP` | Authentik group required for admin access (your "role") |
 | `TRUST_PROXY_SECRET` | Shared secret NPM injects so the worker only trusts proxied requests |
 | `TEABLE_TOKEN` | Privileged Teable token (server-side only) |
-| `CHROMA_TABLE_ID` / `GLASS_TABLE_ID` | Target tables for approved combos |
+| `TEABLE_BASE_ID` | Teable base; tables (e.g. Frog Pairs / Mutations for combos) are resolved by name |
 | `ALLOWED_ORIGIN` | Your website origin(s), for CORS on `/api/submit` |
 | `COOKIE_SECRET` | Signs admin session cookies (password/oidc modes) |
 
@@ -141,6 +141,5 @@ queue. Admin actions send your id_token automatically.
 ## Screenshots
 
 Uploaded screenshots are stored on the worker and shown in the review UI so you
-can verify a combo before approving. Auto-attaching the image to the Teable
-record on approval is a planned enhancement; for now the image lives in the
-`/data/uploads` volume and the combo record is created without it.
+can verify a combo before approving. On approval the image is attached to the
+combo's Frog Pairs record (a pair carries one screenshot per mutation submitted).
