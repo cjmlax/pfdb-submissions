@@ -13,7 +13,7 @@ import {
 const SETS_URL = 'https://nimblebit.com/sets.txt';
 
 const FROGS_TABLE_ID     = 'tblgaaUnZGx1i61RCOZ';
-const FROG_CODE_FIELD = 'fldXdFuyFj6NDz1qjMY'; // numeric code "breed:base:secondary", e.g. "103:13:2"
+const FROG_CODE_FIELD = 'fldXdFuyFj6NDz1qjMY'; // numeric code "base:secondary:breed", e.g. "13:2:103"
 
 const SET_DATE_FIELD_ID  = 'fld0g2OJuIM4fScLjfS';
 const SET_NAME_FIELD_ID  = 'fldGxycvkmQqAM1ACak';
@@ -33,7 +33,7 @@ const FROG_FIELD_IDS = [
 interface ParsedSet {
   weekId: string;  // YYYY-WW
   name: string;
-  frogs: string[]; // numeric codes ("breed:base:secondary"), expanded by count
+  frogs: string[]; // numeric codes ("base:secondary:breed"), expanded by count
 }
 
 function parseWeekId(raw: string): string {
@@ -58,9 +58,9 @@ function parseFile(text: string): ParsedSet[] {
       const secondary = parts[2];
       const breed     = parts[3];
       if (!count || !base || !secondary || !breed) continue;
-      // File format is count:base:secondary:breed, but the frogs table's readable
-      // name is breed:base:secondary (colon-separated), e.g. file "1:13:2:103" → "103:13:2".
-      const readable = `${breed}:${base}:${secondary}`;
+      // File format is count:base:secondary:breed; the frogs table's Frog_ID is the
+      // same code minus the count, e.g. file "1:13:2:103" → "13:2:103".
+      const readable = `${base}:${secondary}:${breed}`;
       for (let c = 0; c < count; c++) frogs.push(readable);
     }
     if (frogs.length > 0) sets.push({ weekId: parseWeekId(weekRaw), name, frogs });

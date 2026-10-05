@@ -11,7 +11,8 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "review": "tsx src/cli/review.ts"
+    "review": "tsx src/cli/review.ts",
+    "migrate-frog-ids": "tsx src/cli/migrateFrogIds.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^9.4.0",
