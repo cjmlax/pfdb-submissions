@@ -4,6 +4,7 @@ import {
   resolveFieldId, resolveTableId, teableCreateRecordById, teableFindRecords, teableGetRecordById,
   teableUpdateRecordById, teableUploadAttachmentToRecord,
 } from '../teable';
+import { VERSION_FIELD_ID } from '../tasks/versionPoller';
 
 // A community-submitted Chroma or Glass mutation. The website resolves every
 // picked frog to its real Teable record, so we receive record ids directly —
@@ -13,7 +14,8 @@ import {
 //   resultFrog     — the special frog the pair produces (required)
 //   lostFrog       — the normal offspring it replaces (optional)
 //   sourceLink     — attribution: where the combo was posted (optional)
-//   version        — Changelog record of the game version it was found on (optional)
+//   version        — game version string it was found on, e.g. "1.2.3" (optional);
+//                    must exist in the Changelog table, stored on the pair as text
 //
 // Downstream, every parent pair is one "Frog Pairs" record, and each mutation it
 // produces is a "Mutations" record linked back to it. A Verified pair is taken
@@ -30,7 +32,6 @@ export const comboSchema = z.object({
   lostFrogId: z.string().min(1).max(40).optional(),
   lostFrogName: z.string().min(1).max(120).optional(),
   sourceLink: z.string().url().max(500).optional(),
-  versionId: z.string().min(1).max(40).optional(),
   versionName: z.string().min(1).max(40).optional(),
 });
 
@@ -81,11 +82,13 @@ export const comboHandler: SubmissionHandler<ComboPayload> = {
   schema: comboSchema,
   async preSubmit(p) {
     await findOpenPair(p);
-    if (p.versionId) {
+    if (p.versionName) {
       const changelogId = await resolveTableId('Changelog');
-      if (!(await teableGetRecordById(changelogId, p.versionId))) {
-        throw new Error('The selected game version is not recognised.');
-      }
+      const [known] = await teableFindRecords(changelogId, {
+        conjunction: 'and',
+        filterSet: [{ fieldId: VERSION_FIELD_ID, operator: 'is', value: p.versionName }],
+      }, 1);
+      if (!known) throw new Error('The selected game version is not recognised.');
     }
   },
   summarize: (p) => {
@@ -101,7 +104,7 @@ export const comboHandler: SubmissionHandler<ComboPayload> = {
 
     // Approval verifies the pair. An existing (unverified) pair is overwritten
     // with the submission — fields it leaves blank are cleared, not kept.
-    // Link fields take { id } references; source_link is a plain URL string.
+    // Link fields take { id } references; source_link and version are plain text.
     // Store the stable Authentik ID so attribution survives username changes.
     const existing = await findOpenPair(p);
     const screenshotField = await pairField('screenshot');
@@ -109,7 +112,7 @@ export const comboHandler: SubmissionHandler<ComboPayload> = {
       [await pairField('verified')]: true,
       [await pairField('source_link')]: p.sourceLink || null,
       [await pairField('submitter')]: ctx.submitterSub || null,
-      [await pairField('version')]: p.versionId ? { id: p.versionId } : null,
+      [await pairField('version')]: p.versionName || null,
     };
 
     let pairId: string;
