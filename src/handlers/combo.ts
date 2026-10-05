@@ -33,12 +33,54 @@ export const comboSchema = z.object({
   lostFrogName: z.string().min(1).max(120).optional(),
   sourceLink: z.string().url().max(500).optional(),
   versionName: z.string().min(1).max(40).optional(),
+}).refine((p) => !p.lostFrogId === !p.lostFrogName, {
+  message: 'lostFrogId and lostFrogName must be given together',
+  path: ['lostFrogId'],
 });
 
 export type ComboPayload = z.infer<typeof comboSchema>;
 
 const PAIRS_TABLE = 'Frog Pairs';
 const MUTATIONS_TABLE = 'Mutations';
+const FROGS_TABLE = 'Froggies';
+
+// Each frog travels as a record id plus its name. The id is what gets pushed;
+// the name is what reviewers read. Confirms every pair still agrees, so a
+// payload can't name one frog while linking another.
+async function checkFrogNames(p: ComboPayload): Promise<void> {
+  const frogs: [string, string, string | undefined][] = [
+    ['Parent 1', p.frog1Id, p.frog1Name],
+    ['Parent 2', p.frog2Id, p.frog2Name],
+    ['Result',   p.resultFrogId, p.resultFrogName],
+  ];
+  if (p.lostFrogId) frogs.push(['Lost frog', p.lostFrogId, p.lostFrogName]);
+
+  const tableId = await resolveTableId(FROGS_TABLE);
+  const nameField = await resolveFieldId(tableId, { dbFieldName: 'fullname' });
+  await Promise.all(frogs.map(async ([role, id, name]) => {
+    const record = await teableGetRecordById(tableId, id);
+    if (!record) throw new Error(`${role}: ${id} is not a known frog record.`);
+    const actual = String(record[nameField] ?? '');
+    if (actual !== name) throw new Error(`${role}: record ${id} is ${actual}, not ${name}.`);
+  }));
+}
+
+async function checkVersion(p: ComboPayload): Promise<void> {
+  if (!p.versionName) return;
+  const changelogId = await resolveTableId('Changelog');
+  const [known] = await teableFindRecords(changelogId, {
+    conjunction: 'and',
+    filterSet: [{ fieldId: VERSION_FIELD_ID, operator: 'is', value: p.versionName }],
+  }, 1);
+  if (!known) throw new Error('The selected game version is not recognised.');
+}
+
+// Everything a combo must satisfy before it's stored — on submit and on edit.
+async function validateCombo(p: ComboPayload): Promise<void> {
+  await findOpenPair(p);
+  await checkVersion(p);
+  await checkFrogNames(p);
+}
 
 const typeLabel = (p: ComboPayload) => (p.variant === 'chroma' ? 'Chroma' : 'Glass');
 
@@ -80,17 +122,8 @@ export const comboHandler: SubmissionHandler<ComboPayload> = {
   label: 'Chroma / Glass combination',
   acceptsScreenshot: true,
   schema: comboSchema,
-  async preSubmit(p) {
-    await findOpenPair(p);
-    if (p.versionName) {
-      const changelogId = await resolveTableId('Changelog');
-      const [known] = await teableFindRecords(changelogId, {
-        conjunction: 'and',
-        filterSet: [{ fieldId: VERSION_FIELD_ID, operator: 'is', value: p.versionName }],
-      }, 1);
-      if (!known) throw new Error('The selected game version is not recognised.');
-    }
-  },
+  preSubmit: validateCombo,
+  preEdit: validateCombo,
   summarize: (p) => {
     const head = `${typeLabel(p)}: ${p.frog1Name} + ${p.frog2Name}`;
     const result = ` → ${p.resultFrogName}`;

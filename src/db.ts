@@ -95,6 +95,18 @@ export const queries = {
      WHERE id = @id
        AND status = 'pending'
   `),
+  // The review list's source link mirrors the payload's sourceLink, as on submit.
+  setSubmitterNote: db.prepare(`
+    UPDATE submissions SET submitter_note = @submitter_note WHERE id = @id AND status = 'pending'
+  `),
+  // Reassigns (or, with nulls, anonymises) a pending submission's credit.
+  setSubmitter: db.prepare(`
+    UPDATE submissions
+       SET submitter_sub  = @submitter_sub,
+           submitter_name = @submitter_name
+     WHERE id = @id
+       AND status = 'pending'
+  `),
   deleteById: db.prepare(`DELETE FROM submissions WHERE id = ?`),
   pendingPayloadValues: db.prepare(`
     SELECT DISTINCT json_extract(payload, '$.' || @key) AS v

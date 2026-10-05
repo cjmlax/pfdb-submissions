@@ -27,6 +27,11 @@ export interface SubmissionHandler<P = unknown> {
   // Optional async check run after schema validation but before the row is stored.
   // Throw an Error with a user-facing message to reject the submission (→ HTTP 409).
   preSubmit?(payload: P): Promise<void>;
+  // Optional async check run when an admin saves an edit, after schema
+  // validation. Throw an Error with a reviewer-facing message to refuse the
+  // edit (→ HTTP 409). Separate from preSubmit, whose checks may not apply to a
+  // row that's already pending (e.g. "already has a submission pending").
+  preEdit?(payload: P): Promise<void>;
   // Optional identity for batch submits: two items in one batch with the same
   // key are duplicates, and only the first is accepted.
   dedupeKey?(payload: P): string;

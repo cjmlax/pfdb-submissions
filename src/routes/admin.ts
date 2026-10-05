@@ -7,6 +7,7 @@ import { getHandler } from '../handlers/registry';
 import { requireUserAdmin } from '../userAuth';
 import { notify } from '../notify';
 import { broadcastSse } from '../sse';
+import { getUser } from '../users';
 
 const MIME_BY_EXT: Record<string, string> = {
   png: 'image/png',
@@ -31,6 +32,7 @@ function toDto(r: SubmissionRow) {
     summary: r.summary,
     submitterNote: r.submitter_note,
     submitter: r.submitter_name, // null → anonymous submission
+    submitterSub: r.submitter_sub,
     screenshot: r.screenshot ? `/api/admin/uploads/${r.screenshot}` : null,
     createdAt: r.created_at,
     batchId: r.batch_id,
@@ -164,6 +166,8 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       let payloadStr = '';
       let newFileBuf: Buffer | null = null;
       let clearScreenshot = false;
+      // Absent → credit unchanged; '' → anonymous; otherwise a known user's sub.
+      let submitterSub: string | undefined;
 
       for await (const part of req.parts()) {
         if (part.type === 'file') {
@@ -178,14 +182,44 @@ export async function registerAdminRoutes(app: FastifyInstance) {
           payloadStr = String(part.value);
         } else if (part.fieldname === 'clearScreenshot') {
           clearScreenshot = String(part.value) === '1';
+        } else if (part.fieldname === 'submitterSub') {
+          submitterSub = String(part.value);
         }
       }
 
-      let payload: unknown;
-      try { payload = JSON.parse(payloadStr || '{}'); }
+      let raw: unknown;
+      try { raw = JSON.parse(payloadStr || '{}'); }
       catch { return reply.code(400).send({ error: 'invalid payload JSON' }); }
 
-      const summary = handler.summarize(payload as never);
+      // Edits meet the same schema as submissions, so a bad value is refused
+      // here rather than surfacing as a failed push on approve.
+      const parsed = handler.schema.safeParse(raw);
+      if (!parsed.success) {
+        const detail = parsed.error.issues.map(i => `${i.path.join('.') || 'payload'}: ${i.message}`).join('; ');
+        return reply.code(400).send({ error: 'validation failed', detail });
+      }
+      const payload = parsed.data;
+
+      if (handler.preEdit) {
+        try {
+          await handler.preEdit(payload);
+        } catch (e) {
+          return reply.code(409).send({ error: e instanceof Error ? e.message : 'Edit not allowed.' });
+        }
+      }
+
+      let submitter: { sub: string | null; name: string | null } | null = null;
+      if (submitterSub !== undefined) {
+        if (submitterSub === '') {
+          submitter = { sub: null, name: null };
+        } else {
+          const user = getUser(submitterSub);
+          if (!user) return reply.code(400).send({ error: 'Unknown submitter — they must have signed in to the site.' });
+          submitter = { sub: user.sub, name: user.username };
+        }
+      }
+
+      const summary = handler.summarize(payload);
 
       let screenshot = row.screenshot;
       if (newFileBuf) {
@@ -203,6 +237,8 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       }
 
       queries.update.run({ id, payload: JSON.stringify(payload), summary, screenshot });
+      queries.setSubmitterNote.run({ id, submitter_note: (payload as { sourceLink?: string }).sourceLink ?? null });
+      if (submitter) queries.setSubmitter.run({ id, submitter_sub: submitter.sub, submitter_name: submitter.name });
       req.log.info({ id }, 'submission edited');
       broadcastSse('submission', { id, action: 'edited' });
       return { ok: true, summary };
