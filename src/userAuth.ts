@@ -92,6 +92,18 @@ export const requireUserAdmin: preHandlerHookHandler = async (req, reply) => {
   req.user = user;
 };
 
+// Like requireUser, but also requires the SPA mod group. Deliberately separate
+// from admin: a user can hold either role without the other, and admin alone
+// doesn't grant mod tools.
+export const requireUserMod: preHandlerHookHandler = async (req, reply) => {
+  const user = await verify(req);
+  if (!user) return reply.code(401).send({ error: 'unauthorized' });
+  if (!user.groups.includes(config.userAuth.modGroup)) {
+    return reply.code(403).send({ error: 'forbidden' });
+  }
+  req.user = user;
+};
+
 // True if the signed-in user is in the given PFDB group (e.g. 'admin', 'mod').
 export function userInGroup(req: FastifyRequest, group: string): boolean {
   return req.user?.groups.includes(group) ?? false;

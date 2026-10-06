@@ -140,6 +140,25 @@ export async function teableFindRecords(
   return (data.records ?? []).map((r) => ({ id: r.id, fields: r.fields ?? {} }));
 }
 
+// Returns every record in a table (fields keyed by field id), paging through.
+// Meant for small tables, e.g. the Changelog.
+export async function teableListRecords(tableId: string): Promise<{ id: string; fields: Record<string, unknown> }[]> {
+  const out: { id: string; fields: Record<string, unknown> }[] = [];
+  const take = 1000;
+  for (let skip = 0; ; skip += take) {
+    const url = `${config.teable.baseUrl}/api/table/${tableId}/record?fieldKeyType=id&take=${take}&skip=${skip}`;
+    const res = await fetch(url, { headers: authHeader() });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`Teable record fetch failed (${res.status}): ${text.slice(0, 300)}`);
+    }
+    const data = (await res.json()) as { records?: { id: string; fields?: Record<string, unknown> }[] };
+    const records = data.records ?? [];
+    for (const r of records) out.push({ id: r.id, fields: r.fields ?? {} });
+    if (records.length < take) return out;
+  }
+}
+
 // Finds the current maximum numeric value of a field across all records in a table.
 // Used to compute the next sequential value (max + 1) before creating a new record.
 export async function teableGetMaxNumber(tableId: string, fieldId: string): Promise<number> {

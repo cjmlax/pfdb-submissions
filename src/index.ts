@@ -8,6 +8,7 @@ import { registerAdminRoutes } from './routes/admin';
 import { registerAdminBadgeRoutes } from './routes/adminBadges';
 import { registerAdminAlertRoutes } from './routes/adminAlerts';
 import { registerImageRoutes } from './routes/image';
+import { registerModPairRoutes } from './routes/modPairs';
 import { registerVersionPoller } from './tasks/versionPoller';
 import { registerWeeklySetsPoller } from './tasks/weeklySetsPoller';
 
@@ -31,6 +32,7 @@ async function main() {
   await registerAdminBadgeRoutes(app);
   await registerAdminAlertRoutes(app);
   await registerImageRoutes(app);
+  await registerModPairRoutes(app);
 
   await app.listen({ port: config.port, host: config.host });
   app.log.info(

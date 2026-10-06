@@ -21,8 +21,8 @@ const SOURCES: Record<Platform, string> = {
 
 export const VERSION_FIELD_ID = 'fldUhvklcsbChGy9GFQ'; // primary — not unique: one row per platform
 const DATE_FIELD_ID     = 'fldo9XCT2GpX8srHYsJ';
-const PLATFORM_FIELD_ID = 'fldFnsLWl4pbH1HWl56'; // single select: iOS / Android (Both = legacy iTunes poller rows)
-const VISIBLE_FIELD_ID  = 'fldmzgjllfJU8aFXao7';
+export const PLATFORM_FIELD_ID = 'fldFnsLWl4pbH1HWl56'; // single select: iOS / Android (Both = legacy iTunes poller rows)
+export const VISIBLE_FIELD_ID  = 'fldmzgjllfJU8aFXao7';
 const SOURCE_FIELD_ID   = 'fldcIBT2eT22GpT0wzW'; // single select: Apptopia Poller / iTunes Poller / Manual
 const NOTES_FIELD_ID    = 'fldEf3IlPMbDRhgkVJl';
 

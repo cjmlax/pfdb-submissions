@@ -113,6 +113,11 @@ export const queries = {
       FROM submissions
      WHERE type = @type AND status = 'pending'
   `),
+  pendingPayloadPairs: db.prepare(`
+    SELECT DISTINCT json_extract(payload, '$.' || @keyA) AS a, json_extract(payload, '$.' || @keyB) AS b
+      FROM submissions
+     WHERE type = @type AND status = 'pending'
+  `),
 };
 
 export function getById(id: string): SubmissionRow | undefined {
@@ -137,6 +142,14 @@ export function pendingPayloadValues(type: string, key: string): string[] {
   return (queries.pendingPayloadValues.all({ type, key }) as { v: unknown }[])
     .map(r => r.v)
     .filter((v): v is string => typeof v === 'string');
+}
+
+// Like pendingPayloadValues, for two keys read together — e.g. the parent pairs
+// (frog1Id, frog2Id) that have a combo awaiting review.
+export function pendingPayloadPairs(type: string, keyA: string, keyB: string): [string, string][] {
+  return (queries.pendingPayloadPairs.all({ type, keyA, keyB }) as { a: unknown; b: unknown }[])
+    .filter((r): r is { a: string; b: string } => typeof r.a === 'string' && typeof r.b === 'string')
+    .map(r => [r.a, r.b]);
 }
 
 export function deleteById(id: string): void {

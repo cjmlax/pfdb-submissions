@@ -34,8 +34,8 @@ export const config = {
     // Group (within pfdb_groups) that grants SPA admin powers. The SPA scope
     // mapping strips the "pfdb-" prefix, so "pfdb-admins" arrives as "admins".
     adminGroup:  opt('USER_OIDC_ADMIN_GROUP', 'admins'),
-    // Group for moderators — currently only drives the auto-managed Mod badge
-    // (see users.syncGroupBadge), not any additional site permissions.
+    // Group for moderators — drives the auto-managed Mod badge (see
+    // users.syncGroupBadge) and gates the mod tools (see userAuth.requireUserMod).
     modGroup:    opt('USER_OIDC_MOD_GROUP', 'mods'),
   },
 

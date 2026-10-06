@@ -6,6 +6,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { config } from '../config';
 import { db, queries, uploadsDir, listBySubmitter, pendingPayloadValues } from '../db';
 import { resolveTableId } from '../teable';
+import { mapLimit } from '../async';
 import { requireUser, optionalUser } from '../userAuth';
 import {
   upsertUser, submitFlairRequest, clearFlairRequest, clearFlair, confirmFlairCode, getProfile, getUser,
@@ -56,20 +57,6 @@ const MAX_BATCH = 500;
 
 function hashIp(ip: string): string {
   return createHash('sha256').update(`${ip}|${config.ipHashSecret}`).digest('hex').slice(0, 16);
-}
-
-// Runs fn over items with at most `limit` in flight, preserving order.
-async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
-  const out = new Array<R>(items.length);
-  let next = 0;
-  const worker = async () => {
-    while (next < items.length) {
-      const i = next++;
-      out[i] = await fn(items[i]);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-  return out;
 }
 
 const IMAGE_EXT: Record<string, string> = {
