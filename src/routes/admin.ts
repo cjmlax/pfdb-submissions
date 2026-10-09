@@ -172,7 +172,8 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       let payloadStr = '';
       let newFileBuf: Buffer | null = null;
       let clearScreenshot = false;
-      // Absent → credit unchanged; '' → anonymous; otherwise a known user's sub.
+      // Absent → credit unchanged; '' → anonymous; '~Name' → a non-user credited
+      // by display name; otherwise a known user's sub.
       let submitterSub: string | undefined;
 
       for await (const part of req.parts()) {
@@ -218,6 +219,12 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       if (submitterSub !== undefined) {
         if (submitterSub === '') {
           submitter = { sub: null, name: null };
+        } else if (submitterSub.startsWith('~')) {
+          // Stored as-is: the '~' marks the Submitter as a manual credit downstream.
+          const name = submitterSub.slice(1).trim().replace(/\s+/g, ' ');
+          if (!name) return reply.code(400).send({ error: 'Enter a display name for the non-user submitter.' });
+          if (name.length > 80) return reply.code(400).send({ error: 'Display name is too long (80 characters max).' });
+          submitter = { sub: `~${name}`, name };
         } else {
           const user = getUser(submitterSub);
           if (!user) return reply.code(400).send({ error: 'Unknown submitter — they must have signed in to the site.' });
