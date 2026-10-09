@@ -1,7 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import type { FastifyInstance } from 'fastify';
-import { compressImage, cropImage } from '../imageProcess';
+import { cropImage, originalScreenshotName, removeOriginalScreenshot, storeScreenshot } from '../imageProcess';
 import { getById, listByStatus, listPendingInBatch, queries, deleteById, uploadsDir, type SubmissionRow } from '../db';
 import { getHandler } from '../handlers/registry';
 import { requireUserAdmin } from '../userAuth';
@@ -34,6 +34,10 @@ function toDto(r: SubmissionRow) {
     submitter: r.submitter_name, // null → anonymous submission
     submitterSub: r.submitter_sub,
     screenshot: r.screenshot ? `/api/admin/uploads/${r.screenshot}` : null,
+    // Uncropped upload, present only while an auto-cropped screenshot is pending.
+    screenshotOriginal: r.screenshot && fs.existsSync(path.join(uploadsDir, originalScreenshotName(r.id)))
+      ? `/api/admin/uploads/${originalScreenshotName(r.id)}`
+      : null,
     createdAt: r.created_at,
     batchId: r.batch_id,
   };
@@ -55,6 +59,7 @@ async function approveRow(row: SubmissionRow): Promise<{ ok: true; ref: string |
     queries.setStatus.run({
       id: row.id, status: 'pushed', reviewer_note: null, reviewed_at: new Date().toISOString(), pushed_ref: ref,
     });
+    removeOriginalScreenshot(row.id);
     return { ok: true, ref };
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
@@ -67,6 +72,7 @@ async function approveRow(row: SubmissionRow): Promise<{ ok: true; ref: string |
 
 // Deletes a submission and its screenshot (rejections aren't retained).
 function discardRow(row: SubmissionRow): void {
+  removeOriginalScreenshot(row.id);
   if (row.screenshot) {
     const p = path.join(uploadsDir, row.screenshot);
     if (fs.existsSync(p)) fs.unlinkSync(p);
@@ -227,12 +233,11 @@ export async function registerAdminRoutes(app: FastifyInstance) {
           const oldPath = path.join(uploadsDir, row.screenshot);
           if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
         }
-        const compressed = await compressImage(newFileBuf);
-        screenshot = `${id}.${compressed.ext}`;
-        fs.writeFileSync(path.join(uploadsDir, screenshot), compressed.data);
+        ({ screenshot } = await storeScreenshot(id, newFileBuf, { autoCrop: !!handler.autoCropScreenshot }));
       } else if (clearScreenshot && row.screenshot) {
         const oldPath = path.join(uploadsDir, row.screenshot);
         if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+        removeOriginalScreenshot(id);
         screenshot = null;
       }
 
@@ -244,16 +249,21 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       return { ok: true, summary };
     });
 
-    // Crop → re-encode the stored screenshot to the given region.
+    // Crop → re-encode the stored screenshot to the given region. With
+    // fromOriginal, the region is taken from the kept uncropped upload instead
+    // (redoing a bad auto-crop); the original stays so it can be redone again.
     admin.post<{ Params: { id: string } }>('/api/admin/:id/crop', async (req, reply) => {
       const { id } = req.params;
       const row = getById(id);
       if (!row) return reply.code(404).send({ error: 'not found' });
       if (!row.screenshot) return reply.code(400).send({ error: 'no screenshot' });
 
-      const { left, top, right, bottom } = req.body as { left: number; top: number; right: number; bottom: number };
+      const { left, top, right, bottom, fromOriginal } =
+        req.body as { left: number; top: number; right: number; bottom: number; fromOriginal?: boolean };
       const imgPath = path.join(uploadsDir, row.screenshot);
-      const { data, ext } = await cropImage(fs.readFileSync(imgPath), { left, top, right, bottom });
+      const srcPath = fromOriginal ? path.join(uploadsDir, originalScreenshotName(id)) : imgPath;
+      if (!fs.existsSync(srcPath)) return reply.code(400).send({ error: 'no original screenshot kept' });
+      const { data, ext } = await cropImage(fs.readFileSync(srcPath), { left, top, right, bottom });
 
       const newFilename = `${id}.${ext}`;
       fs.writeFileSync(path.join(uploadsDir, newFilename), data);

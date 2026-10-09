@@ -53,6 +53,9 @@ export const config = {
 
   image: {
     quality: Number(opt('IMAGE_QUALITY', '80')),
+    // Width auto-cropped and admin-cropped screenshots are normalized to
+    // (never upscaled) — legible on the site without storing phone-native sizes.
+    screenshotWidth: Number(opt('IMAGE_SCREENSHOT_WIDTH', '800')),
   },
 
   export: {

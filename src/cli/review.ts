@@ -12,6 +12,7 @@ import { stdin as input, stdout as output } from 'node:process';
 import { config } from '../config';
 import { listByStatus, getById, queries, uploadsDir } from '../db';
 import { getHandler } from '../handlers/registry';
+import { removeOriginalScreenshot } from '../imageProcess';
 
 async function approve(id: string): Promise<void> {
   const row = getById(id);
@@ -24,6 +25,7 @@ async function approve(id: string): Promise<void> {
   queries.setStatus.run({
     id, status: 'pushed', reviewer_note: null, reviewed_at: new Date().toISOString(), pushed_ref: ref,
   });
+  removeOriginalScreenshot(id);
   console.log(`  → pushed${ref ? ` (${ref})` : ''}`);
 }
 
@@ -31,6 +33,7 @@ function reject(id: string, note: string): void {
   queries.setStatus.run({
     id, status: 'rejected', reviewer_note: note || null, reviewed_at: new Date().toISOString(), pushed_ref: null,
   });
+  removeOriginalScreenshot(id);
   console.log('  → rejected');
 }
 

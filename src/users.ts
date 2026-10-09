@@ -21,6 +21,9 @@ export interface UserRow {
   flair_sender_code: string | null; // the admin/mod's own Friend Code, set alongside flair_passphrase, so
                                      // the recipient can verify who the in-game gift is coming from
   flair_requested_at: string | null; // ISO time the user submitted the request
+  connected_accounts: string | null; // JSON { platform: name } from the id_token's connected_accounts claim
+  display_source: string | null;  // which name they show site-wide: 'pfdb' (Friend Code) or a platform key
+  show_credit: number;            // 1 = name them in public mutation credits (default), 0 = opted out
   created_at: string;             // ISO — first time we saw this user
   last_seen: string;              // ISO — refreshed on each profile fetch
 }
@@ -44,6 +47,8 @@ export interface PublicProfile {
   flair_pending: string | null; // requested friend code while a request is active
   flair_status: FlairStatus;    // drives the Account page UI state
   flair_sender_code: string | null; // sender's Friend Code, shown while confirming a 'sent' gift
+  display_source: string | null;    // chosen display-name source (see setDisplaySource)
+  show_credit: boolean;             // named in public mutation credits
   badges: BadgeRow[];
 }
 
@@ -122,15 +127,22 @@ if (!userCols.has('flair_status'))       db.exec(`ALTER TABLE users ADD COLUMN f
 if (!userCols.has('flair_passphrase'))   db.exec(`ALTER TABLE users ADD COLUMN flair_passphrase TEXT`);
 if (!userCols.has('flair_sender_code'))  db.exec(`ALTER TABLE users ADD COLUMN flair_sender_code TEXT`);
 if (!userCols.has('flair_requested_at')) db.exec(`ALTER TABLE users ADD COLUMN flair_requested_at TEXT`);
+if (!userCols.has('connected_accounts')) db.exec(`ALTER TABLE users ADD COLUMN connected_accounts TEXT`);
+if (!userCols.has('display_source'))     db.exec(`ALTER TABLE users ADD COLUMN display_source TEXT`);
+if (!userCols.has('show_credit'))        db.exec(`ALTER TABLE users ADD COLUMN show_credit INTEGER NOT NULL DEFAULT 1`);
 
 const stmts = {
+  // A null connected_accounts (claim absent from this token) keeps the stored value.
   upsertUser: db.prepare(`
-    INSERT INTO users (sub, username, created_at, last_seen)
-    VALUES (@sub, @username, @now, @now)
+    INSERT INTO users (sub, username, connected_accounts, created_at, last_seen)
+    VALUES (@sub, @username, @connected, @now, @now)
     ON CONFLICT(sub) DO UPDATE SET
-      username  = excluded.username,
-      last_seen = excluded.last_seen
+      username           = excluded.username,
+      connected_accounts = COALESCE(excluded.connected_accounts, users.connected_accounts),
+      last_seen          = excluded.last_seen
   `),
+  setDisplaySource: db.prepare(`UPDATE users SET display_source = @source WHERE sub = @sub`),
+  setShowCredit:    db.prepare(`UPDATE users SET show_credit = @show WHERE sub = @sub`),
   getUser:    db.prepare(`SELECT * FROM users WHERE sub = ?`),
   listUsers:  db.prepare(`SELECT * FROM users ORDER BY last_seen DESC`),
   deleteUser: db.prepare(`DELETE FROM users WHERE sub = ?`),
@@ -217,8 +229,57 @@ const stmts = {
 
 // Records the user on first contact and refreshes username/last_seen thereafter.
 // Call this whenever an authenticated request arrives so the directory stays current.
-export function upsertUser(sub: string, username: string | null): void {
-  stmts.upsertUser.run({ sub, username, now: new Date().toISOString() });
+// `connected` (the token's connected_accounts) is only refreshed when passed.
+export function upsertUser(sub: string, username: string | null, connected?: Record<string, string> | null): void {
+  stmts.upsertUser.run({
+    sub, username,
+    connected: connected ? JSON.stringify(connected) : null,
+    now: new Date().toISOString(),
+  });
+}
+
+// Connected platforms usable for sign-in only, never shown as a name — Google's
+// account name is the user's email address. Keep in sync with the SPA's
+// useDisplayName.
+const SIGN_IN_ONLY_SOURCES = new Set(['google']);
+
+// The user's connected platforms that can be shown as a name.
+function connectedAccounts(user: UserRow): Record<string, string> {
+  try {
+    const all = user.connected_accounts ? JSON.parse(user.connected_accounts) as Record<string, string> : {};
+    return Object.fromEntries(Object.entries(all).filter(([k]) => !SIGN_IN_ONLY_SOURCES.has(k)));
+  } catch {
+    return {};
+  }
+}
+
+// The user picks which name the site shows for them: 'pfdb' (their approved
+// Friend Code) or one of their connected platforms. Only sources they actually
+// have are accepted, so nobody can credit themselves under arbitrary text.
+// Returns false (and changes nothing) for an unknown source.
+export function setDisplaySource(sub: string, source: string): boolean {
+  const user = getUser(sub);
+  if (!user) return false;
+  if (source !== 'pfdb' && !(source in connectedAccounts(user))) return false;
+  stmts.setDisplaySource.run({ sub, source });
+  return true;
+}
+
+// Whether the user is named in public mutation credits (opted in by default).
+export function setShowCredit(sub: string, show: boolean): void {
+  stmts.setShowCredit.run({ sub, show: show ? 1 : 0 });
+}
+
+// The name shown for a user publicly (e.g. mutation credits). Mirrors the SPA's
+// useDisplayName: the chosen source if it still has a name, else the first
+// available source (Friend Code, then platforms), else their username.
+export function publicDisplayName(user: UserRow): string | null {
+  const options: [string, string][] = [
+    ['pfdb', user.flair ?? ''],
+    ...Object.entries(connectedAccounts(user)).map(([k, v]): [string, string] => [k, String(v)]),
+  ].filter(([, name]) => name) as [string, string][];
+  const current = options.find(([k]) => k === user.display_source) ?? options[0];
+  return current?.[1] || user.username;
 }
 
 export function getUser(sub: string): UserRow | undefined {
@@ -297,6 +358,8 @@ export function getProfile(sub: string): PublicProfile | null {
     flair_pending: user.flair_pending,
     flair_status: user.flair_status,
     flair_sender_code: user.flair_sender_code,
+    display_source: user.display_source,
+    show_credit: user.show_credit !== 0,
     badges: badgesForUser(sub),
   };
 }

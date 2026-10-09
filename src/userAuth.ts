@@ -12,7 +12,12 @@ import { syncGroupBadge, ADMIN_BADGE_ID, MOD_BADGE_ID } from './users';
 
 declare module 'fastify' {
   interface FastifyRequest {
-    user?: { sub: string; username: string | null; groups: string[] };
+    user?: {
+      sub: string;
+      username: string | null;
+      groups: string[];
+      connected: Record<string, string> | null; // connected_accounts claim, null if absent
+    };
   }
 }
 
@@ -55,13 +60,17 @@ async function verify(req: FastifyRequest): Promise<FastifyRequest['user'] | nul
       typeof payload.preferred_username === 'string' ? payload.preferred_username
       : typeof payload.name === 'string' ? payload.name
       : null;
+    const connectedClaim = payload.connected_accounts;
+    const connected = connectedClaim && typeof connectedClaim === 'object' && !Array.isArray(connectedClaim)
+      ? Object.fromEntries(Object.entries(connectedClaim).map(([k, v]) => [k, String(v)]))
+      : null;
 
     // Self-healing: sync the auto-managed Admin/Mod badges to this request's
     // live group claims, so they're granted/revoked without any manual action.
     syncGroupBadge(sub, ADMIN_BADGE_ID, groups.includes(config.userAuth.adminGroup));
     syncGroupBadge(sub, MOD_BADGE_ID, groups.includes(config.userAuth.modGroup));
 
-    return { sub, username, groups };
+    return { sub, username, groups, connected };
   } catch {
     return null;
   }

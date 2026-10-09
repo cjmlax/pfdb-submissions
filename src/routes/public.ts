@@ -4,19 +4,20 @@ import fs from 'node:fs';
 import { schedule as cronSchedule } from 'node-cron';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { config } from '../config';
-import { db, queries, uploadsDir, listBySubmitter, pendingPayloadValues } from '../db';
+import { db, queries, listBySubmitter, pendingPayloadValues } from '../db';
 import { resolveTableId } from '../teable';
 import { mapLimit } from '../async';
 import { requireUser, optionalUser } from '../userAuth';
 import {
   upsertUser, submitFlairRequest, clearFlairRequest, clearFlair, confirmFlairCode, getProfile, getUser,
+  setDisplaySource, setShowCredit, publicDisplayName,
   markWeeklyCompleted, clearWeeklyCompleted, completedWeeklySetIds,
 } from '../users';
 import { listActiveAlerts } from '../alerts';
 import { getHandler, listHandlers } from '../handlers/registry';
 import { notify } from '../notify';
 import { broadcastSse } from '../sse';
-import { compressImage } from '../imageProcess';
+import { storeScreenshot } from '../imageProcess';
 
 // Tables exposed via the public export API. Slugs become URL path segments and
 // CSV filenames, so keep them lowercase and URL-safe. Table IDs are resolved by
@@ -54,6 +55,9 @@ const exportState = loadState();
 // Most items one batch submit may carry. Sized to comfortably cover every frog
 // currently missing stats, while bounding the Teable lookups one request makes.
 const MAX_BATCH = 500;
+// Most screenshots one batch request may carry — each is held in memory until
+// the request is processed, so the website splits larger batches.
+const MAX_BATCH_FILES = 10;
 
 function hashIp(ip: string): string {
   return createHash('sha256').update(`${ip}|${config.ipHashSecret}`).digest('hex').slice(0, 16);
@@ -86,9 +90,52 @@ export async function registerPublicRoutes(app: FastifyInstance) {
   // The signed-in user's own profile. Records/refreshes the user on every call
   // (so the directory builds itself as people sign in) and returns their badges.
   app.get('/api/me', { preHandler: requireUser }, async (req) => {
-    const { sub, username } = req.user!;
-    upsertUser(sub, username);
+    const { sub, username, connected } = req.user!;
+    upsertUser(sub, username, connected);
     return getProfile(sub);
+  });
+
+  // Which name the site shows for the user: 'pfdb' (Friend Code) or a connected
+  // platform key. Stored server-side so public credits can use it.
+  app.put<{ Body: { source?: string } }>(
+    '/api/me/display-source',
+    { preHandler: requireUser },
+    async (req, reply) => {
+      const { sub, username, connected } = req.user!;
+      upsertUser(sub, username, connected);
+      const source = typeof req.body?.source === 'string' ? req.body.source : '';
+      if (!setDisplaySource(sub, source)) return reply.code(400).send({ error: 'Unknown display name source.' });
+      return getProfile(sub);
+    },
+  );
+
+  // Opt in/out of being named in public mutation credits.
+  app.put<{ Body: { show?: unknown } }>(
+    '/api/me/show-credit',
+    { preHandler: requireUser },
+    async (req, reply) => {
+      const { sub, username, connected } = req.user!;
+      upsertUser(sub, username, connected);
+      if (typeof req.body?.show !== 'boolean') return reply.code(400).send({ error: '`show` must be true or false.' });
+      setShowCredit(sub, req.body.show);
+      return getProfile(sub);
+    },
+  );
+
+  // Public credit names for Frog Pairs submitters: ?subs=a,b → { a: 'Name' }.
+  // Subs that are unknown, opted out, or have no name are left out. Only the display name
+  // the user chose is exposed — never the sub's other accounts.
+  app.get<{ Querystring: { subs?: string } }>('/api/credits', async (req) => {
+    const subs = [...new Set(String(req.query.subs ?? '').split(','))]
+      .filter(s => /^[\w-]{1,128}$/.test(s))
+      .slice(0, 50);
+    const names: Record<string, string> = {};
+    for (const sub of subs) {
+      const user = getUser(sub);
+      const name = user && user.show_credit !== 0 && publicDisplayName(user);
+      if (name) names[sub] = name;
+    }
+    return names;
   });
 
   // Submit an in-game Friend Code for review. Held as a 'pending' request; the
@@ -229,6 +276,7 @@ export async function registerPublicRoutes(app: FastifyInstance) {
 
       const handler = getHandler(typeStr);
       if (!handler) return reply.code(400).send({ error: 'unknown submission type' });
+      if (handler.requiresScreenshot && !fileBuf) return reply.code(400).send({ error: 'A screenshot is required.' });
 
       let payload: unknown;
       try {
@@ -253,9 +301,7 @@ export async function registerPublicRoutes(app: FastifyInstance) {
       const id = randomUUID();
       let screenshot: string | null = null;
       if (fileBuf && handler.acceptsScreenshot) {
-        const compressed = await compressImage(fileBuf);
-        screenshot = `${id}.${compressed.ext}`;
-        fs.writeFileSync(path.join(uploadsDir, screenshot), compressed.data);
+        ({ screenshot } = await storeScreenshot(id, fileBuf, { autoCrop: !!handler.autoCropScreenshot }));
       }
 
       // Surface the attribution link (if any) in the review note column.
@@ -293,15 +339,43 @@ export async function registerPublicRoutes(app: FastifyInstance) {
   // website can hide them from the missing-stats list.
   app.get('/api/frog-stats/pending', async () => pendingPayloadValues('frogStats', 'frogId'));
 
-  // Submits many items of one type in a single request (JSON, no screenshot).
-  // Each item becomes its own pending submission, reviewed independently; the
-  // response reports per-item acceptance so the website can show what was
-  // refused and why. Body: { type, payloads: [...], hp_url }.
+  // Mutation record ids that already have a completion awaiting review.
+  app.get('/api/mutation-completions/pending', async () => pendingPayloadValues('mutationCompletion', 'mutationId'));
+
+  // Submits many items of one type in a single request. Each item becomes its
+  // own pending submission, reviewed independently; the response reports
+  // per-item acceptance so the website can show what was refused and why.
+  //   JSON:      { type, payloads: [...], hp_url }
+  //   multipart: the same three as fields (payloads as a JSON string), plus a
+  //              file "screenshot.<index>" for each item that has one.
   app.post<{ Body: { type?: unknown; payloads?: unknown; hp_url?: unknown } }>(
     '/api/submit/batch',
     { preHandler: optionalUser, config: { rateLimit: { max: 20, timeWindow: '10 minutes' } } },
     async (req, reply) => {
-      const body = req.body ?? {};
+      let body: { type?: unknown; payloads?: unknown; hp_url?: unknown } = req.body ?? {};
+      const files = new Map<number, Buffer>();
+      if (req.isMultipart()) {
+        body = {};
+        try {
+          for await (const part of req.parts({ limits: { files: MAX_BATCH_FILES } })) {
+            if (part.type === 'file') {
+              const index = /^screenshot\.(\d+)$/.exec(part.fieldname)?.[1];
+              const buf = await part.toBuffer();
+              if (index !== undefined && IMAGE_EXT[part.mimetype] && buf.length > 0) files.set(Number(index), buf);
+            } else if (part.fieldname === 'payloads') {
+              try { body.payloads = JSON.parse(String(part.value)); }
+              catch { return reply.code(400).send({ error: 'invalid payloads JSON' }); }
+            } else if (part.fieldname === 'type' || part.fieldname === 'hp_url') {
+              body[part.fieldname] = String(part.value);
+            }
+          }
+        } catch (e) {
+          const code = (e as { code?: string }).code;
+          if (code === 'FST_REQ_FILE_TOO_LARGE') return reply.code(413).send({ error: 'screenshot too large' });
+          if (code === 'FST_FILES_LIMIT') return reply.code(413).send({ error: `too many screenshots (max ${MAX_BATCH_FILES} per request)` });
+          throw e;
+        }
+      }
 
       // Honeypot tripped → pretend success and silently drop.
       if (typeof body.hp_url === 'string' && body.hp_url.trim() !== '') return reply.send({ ok: true, results: [] });
@@ -317,7 +391,8 @@ export async function registerPublicRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: `too many items (max ${MAX_BATCH})` });
       }
 
-      const checked = await mapLimit(payloads, 8, async (raw): Promise<{ data: unknown } | { error: string }> => {
+      const checked = await mapLimit(payloads, 8, async (raw, index): Promise<{ data: unknown } | { error: string }> => {
+        if (handler.requiresScreenshot && !files.has(index)) return { error: 'A screenshot is required.' };
         const parsed = handler.schema.safeParse(raw);
         if (!parsed.success) {
           return { error: parsed.error.issues.map(i => `${i.path.join('.') || 'item'}: ${i.message}`).join('; ') };
@@ -334,6 +409,7 @@ export async function registerPublicRoutes(app: FastifyInstance) {
       const ipHash = hashIp(req.ip);
       const batchId = randomUUID();
       const seen = new Set<string>();
+      const shots: { id: string; buf: Buffer }[] = [];
       const results: ({ index: number; ok: true; id: string } | { index: number; ok: false; error: string })[] = [];
       const rows: { id: string; summary: string; [col: string]: unknown }[] = [];
       const summaries: string[] = [];
@@ -347,6 +423,8 @@ export async function registerPublicRoutes(app: FastifyInstance) {
         }
         const id = randomUUID();
         const summary = handler.summarize(c.data);
+        const shot = handler.acceptsScreenshot ? files.get(index) : undefined;
+        if (shot) shots.push({ id, buf: shot });
         rows.push({
           id,
           type: handler.type,
@@ -365,6 +443,10 @@ export async function registerPublicRoutes(app: FastifyInstance) {
       });
 
       if (rows.length > 0) {
+        for (const { id, buf } of shots) {
+          const row = rows.find(r => r.id === id)!;
+          ({ screenshot: row.screenshot } = await storeScreenshot(id, buf, { autoCrop: !!handler.autoCropScreenshot }));
+        }
         db.transaction(() => { for (const r of rows) queries.insert.run(r); })();
         if (req.user) upsertUser(req.user.sub, req.user.username);
 

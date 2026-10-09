@@ -22,6 +22,11 @@ export interface SubmissionHandler<P = unknown> {
   label: string;
   // Whether the public form may attach a screenshot for this type.
   acceptsScreenshot?: boolean;
+  // Whether a submission is refused without one (implies acceptsScreenshot).
+  requiresScreenshot?: boolean;
+  // Whether uploaded screenshots are breeding-screen captures to auto-crop to
+  // the offspring box + parent dish (see screenshotAutoCrop).
+  autoCropScreenshot?: boolean;
   // Validates the raw payload from the website. Rejected at submit time.
   schema: ZodType<P, ZodTypeDef, unknown>;
   // Optional async check run after schema validation but before the row is stored.

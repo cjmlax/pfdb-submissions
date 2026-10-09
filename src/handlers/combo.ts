@@ -121,6 +121,7 @@ export const comboHandler: SubmissionHandler<ComboPayload> = {
   type: 'combo',
   label: 'Chroma / Glass combination',
   acceptsScreenshot: true,
+  autoCropScreenshot: true,
   schema: comboSchema,
   preSubmit: validateCombo,
   preEdit: validateCombo,
