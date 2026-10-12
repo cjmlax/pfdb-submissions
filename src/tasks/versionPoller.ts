@@ -44,7 +44,7 @@ function cleanNotes(s: string | undefined): string {
 
 async function fetchVersions(platform: Platform): Promise<ApptopiaVersion[]> {
   const res = await fetch(SOURCES[platform], {
-    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; pfdb-submissions/1.0)' },
+    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; pfdb-worker/1.0)' },
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const html = await res.text();

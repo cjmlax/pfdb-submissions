@@ -1,4 +1,4 @@
-# pfdb-submissions
+# pfdb-worker
 
 A small self-hosted worker that lets visitors to **pfdatabase.com** submit
 potential data (Chroma/Glass combinations, frog stats, mutation completions),
@@ -36,7 +36,7 @@ The worker runs in the `pfdb-app` stack of the high-availability cluster
 (`pfdb-infra`), on the active node only. It keeps no local state: the queue,
 users, badges and alerts live in Postgres (reached through the node's HAProxy on
 port 5000, which always points at the primary), and screenshots live in the
-Garage bucket `pfdb-submissions`. After a failover the worker starts on the other
+Garage bucket `pfdb-worker`. After a failover the worker starts on the other
 node with everything intact. The changelog and weekly-sets pollers need no
 coordination, since only one worker runs at a time.
 
@@ -70,7 +70,7 @@ npm run dev               # http://localhost:8090
 ```
 
 ### Docker
-The image is published to `ghcr.io/cjmlax/pfdb-submissions` on every `v*` tag.
+The image is published to `ghcr.io/cjmlax/pfdb-worker` on every `v*` tag.
 Its compose service and env file live in `pfdb-infra` (`stacks/pfdb-app`).
 
 ## Endpoints

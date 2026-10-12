@@ -48,7 +48,7 @@ async function main() {
 
   await app.listen({ port: config.port, host: config.host });
   app.log.info(
-    `pfdb-submissions up — site=${config.siteUrl}, origins=${config.allowedOrigin.join(',')}`,
+    `pfdb-worker up — site=${config.siteUrl}, origins=${config.allowedOrigin.join(',')}`,
   );
   registerVersionPoller(app.log);
   registerWeeklySetsPoller(app.log);

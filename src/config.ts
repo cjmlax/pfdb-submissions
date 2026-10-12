@@ -67,7 +67,7 @@ export const config = {
   s3: {
     endpoint:        opt('S3_ENDPOINT', ''),
     region:          opt('S3_REGION', 'garage'),
-    bucket:          opt('S3_BUCKET', 'pfdb-submissions'),
+    bucket:          opt('S3_BUCKET', 'pfdb-worker'),
     accessKeyId:     opt('S3_ACCESS_KEY_ID', ''),
     secretAccessKey: opt('S3_SECRET_ACCESS_KEY', ''),
   },
