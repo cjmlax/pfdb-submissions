@@ -10,7 +10,7 @@ import { requireUserMod } from '../userAuth';
 import { PLATFORM_FIELD_ID, VERSION_FIELD_ID, VISIBLE_FIELD_ID } from '../tasks/versionPoller';
 
 // Mod tool: records parent pairs as Verified with no mutations, straight into
-// Frog Pairs (no review queue). Driven by the Mutation Planner's Verify mode.
+// Frog Pairs (no review queue). Driven by the Habitat Planner's Verify mode.
 // Pairs that produce a mutation still go through the combo submission flow.
 //
 // Only a clean slate is written: a pair already Verified, an unverified record

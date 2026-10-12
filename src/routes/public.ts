@@ -7,7 +7,7 @@ import {
 } from '../db';
 import { clientIp } from '../clientIp';
 import { connectedAccounts } from '../zitadel';
-import { resolveTableId } from '../teable';
+import { resolveFieldId, resolveTableId, teableFindRecords, teableGetRecordById } from '../teable';
 import { mapLimit } from '../async';
 import { requireUser, optionalUser } from '../userAuth';
 import {
@@ -20,6 +20,14 @@ import { getHandler, listHandlers } from '../handlers/registry';
 import { notify } from '../notify';
 import { broadcastSse } from '../sse';
 import { storeScreenshot } from '../imageProcess';
+
+// The { id, title } references in a Teable link cell — a single one or an array.
+function linkCells(val: unknown): { id: string; title: string }[] {
+  const arr = Array.isArray(val) ? val : val ? [val] : [];
+  return arr
+    .filter((v): v is { id: unknown; title?: unknown } => !!v && typeof v === 'object' && 'id' in v)
+    .map(v => ({ id: String(v.id), title: String(v.title ?? '') }));
+}
 
 // Tables exposed via the public export API. Slugs become URL path segments and
 // CSV filenames, so keep them lowercase and URL-safe. Table IDs are resolved by
@@ -232,6 +240,55 @@ export async function registerPublicRoutes(app: FastifyInstance) {
       reviewedAt: r.reviewed_at,
     })),
   );
+
+  // The signed-in user's credited mutations, read live from Teable: every Frog
+  // Pairs record whose Submitter is this user and that has at least one mutation,
+  // with its mutations grouped under it. Link titles are Frog_IDs, so each frog
+  // is looked up once for its full name.
+  app.get('/api/me/mutations', { preHandler: requireUser }, async (req) => {
+    const pairsId = await resolveTableId('Frog Pairs');
+    const pairField = (dbFieldName: string) => resolveFieldId(pairsId, { dbFieldName });
+    const [submitterF, mutationsF, frogAF, frogBF] = await Promise.all(
+      ['submitter', 'mutations', 'frogA', 'frogb'].map(pairField),
+    );
+    const pairs = await teableFindRecords(pairsId, {
+      conjunction: 'and',
+      filterSet: [
+        { fieldId: submitterF, operator: 'is', value: req.user!.sub },
+        { fieldId: mutationsF, operator: 'isNotEmpty', value: null },
+      ],
+    }, 1000);
+
+    const mutId = await resolveTableId('Mutations');
+    const mutField = (dbFieldName: string) => resolveFieldId(mutId, { dbFieldName });
+    const [typeF, resultF, lostF] = await Promise.all(['type', 'result', 'lost'].map(mutField));
+    const mutIds = pairs.flatMap(pair => linkCells(pair.fields[mutationsF]).map(m => m.id));
+    const mutations = new Map(await mapLimit(mutIds, 8, async id => [id, await teableGetRecordById(mutId, id)] as const));
+
+    const frogsId = await resolveTableId('Froggies');
+    const nameF = await resolveFieldId(frogsId, { dbFieldName: 'fullname' });
+    const frogId = (val: unknown) => linkCells(val)[0]?.id ?? null;
+    const frogIds = new Set([
+      ...pairs.flatMap(pair => [pair.fields[frogAF], pair.fields[frogBF]]),
+      ...[...mutations.values()].flatMap(m => (m ? [m[resultF], m[lostF]] : [])),
+    ].map(frogId).filter((id): id is string => !!id));
+    const names = new Map(await mapLimit([...frogIds], 8, async id =>
+      [id, String((await teableGetRecordById(frogsId, id))?.[nameF] ?? '')] as const));
+    const frogName = (val: unknown) => {
+      const id = frogId(val);
+      return id ? names.get(id) || null : null;
+    };
+
+    return pairs.map(pair => ({
+      id: pair.id,
+      frogA: frogName(pair.fields[frogAF]) ?? '',
+      frogB: frogName(pair.fields[frogBF]) ?? '',
+      mutations: linkCells(pair.fields[mutationsF]).flatMap(({ id }) => {
+        const m = mutations.get(id);
+        return m ? [{ id, type: String(m[typeF] ?? ''), result: frogName(m[resultF]) ?? '', lost: frogName(m[lostF]) }] : [];
+      }),
+    })).filter(p => p.mutations.length > 0);
+  });
 
   // Public submission endpoint. Accepts multipart/form-data with fields:
   //   type     — handler key (e.g. "combo")
