@@ -1,20 +1,23 @@
 name: Build and publish image
 
-# Images are only built for semver release tags (e.g. v1.2.3 or v1.3.0-rc.1).
+# Images are only built for semver release tags (e.g. 1.2.3 or 1.3.0-rc.1;
+# a leading "v" is also accepted).
 # Plain commits to main no longer produce an image.
 #
-# Tags pushed for a stable release (vX.Y.Z):
+# Tags pushed for a stable release (X.Y.Z):
 #   X.Y.Z   exact, immutable — pin this in compose
 #   X.Y     moves to the newest patch of that minor
 #   X       moves to the newest minor/patch of that major (skipped for 0.x)
 #   latest  moves to the newest stable release
 #   sha-xxxxxxx  traceability back to the commit
 #
-# Pre-releases (vX.Y.Z-rc.N, -beta.N, ...) only get their exact tag + sha,
+# Pre-releases (X.Y.Z-rc.N, -beta.N, ...) only get their exact tag + sha,
 # so they never move latest / X.Y / X.
 on:
   push:
     tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+      - '[0-9]+.[0-9]+.[0-9]+-*'
       - 'v[0-9]+.[0-9]+.[0-9]+'
       - 'v[0-9]+.[0-9]+.[0-9]+-*'
   workflow_dispatch:        # rebuild an existing tag: pick it in the "Use workflow from" dropdown
@@ -29,7 +32,7 @@ jobs:
       - name: Require a tag ref
         if: github.ref_type != 'tag'
         run: |
-          echo "::error::Run this workflow against a v*.*.* tag, not a branch."
+          echo "::error::Run this workflow against an X.Y.Z release tag, not a branch."
           exit 1
 
       - uses: actions/checkout@v4
@@ -67,7 +70,7 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}},enable=${{ !startsWith(github.ref_name, 'v0.') }}
+            type=semver,pattern={{major}},enable=${{ !startsWith(github.ref_name, '0.') && !startsWith(github.ref_name, 'v0.') }}
             type=sha,format=short
 
       - name: Build and push
