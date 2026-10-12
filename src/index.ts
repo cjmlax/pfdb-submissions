@@ -14,6 +14,7 @@ import { registerAdminBadgeRoutes } from './routes/adminBadges';
 import { registerAdminAlertRoutes } from './routes/adminAlerts';
 import { registerImageRoutes } from './routes/image';
 import { registerModPairRoutes } from './routes/modPairs';
+import { registerZitadelActionRoutes } from './routes/zitadelActions';
 import { registerVersionPoller } from './tasks/versionPoller';
 import { registerWeeklySetsPoller } from './tasks/weeklySetsPoller';
 
@@ -43,6 +44,7 @@ async function main() {
   await registerImageRoutes(app);
   await registerModPairRoutes(app);
   await registerLinkRoutes(app);
+  await registerZitadelActionRoutes(app);
 
   await app.listen({ port: config.port, host: config.host });
   app.log.info(

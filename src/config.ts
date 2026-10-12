@@ -58,6 +58,9 @@ export const config = {
         .map((key) => [opt(`ZITADEL_IDP_${key.toUpperCase()}`, ''), key])
         .filter(([id]) => id),
     ) as Record<string, string>,
+    // Signing key of the Zitadel Actions v2 target that points at
+    // /api/zitadel/actions/idp-intent (see routes/zitadelActions.ts).
+    actionSigningKey: opt('ZITADEL_ACTION_SIGNING_KEY', ''),
   },
 
   // Garage bucket for submission screenshots, reached over the mesh.
