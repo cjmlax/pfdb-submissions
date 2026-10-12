@@ -5,14 +5,15 @@ import { config } from '../config';
 // Zitadel Actions v2 target for the response of
 // /zitadel.user.v2.UserService/RetrieveIdentityProviderIntent.
 //
-// Twitch only works in Zitadel as a Generic OAuth provider (its OIDC userinfo
-// call fails, see the HAProxy Twitch shim), and Zitadel's Generic OAuth provider
-// maps nothing from the provider's profile except the user id. Login v2 then has
+// Twitch and Discord are Generic OAuth providers in Zitadel (Zitadel has no
+// template for either, and Twitch's OIDC userinfo call fails, see the HAProxy
+// Twitch shim). Zitadel's Generic OAuth provider maps nothing from the
+// provider's profile except the user id. Login v2 then has
 // no email, username or name for the account, so it can't auto-link by email and
 // falls back to its "Complete your data" form. Zitadel leaves that mapping to
 // Actions: it sends us the intent response (with the provider's raw userinfo),
-// and whatever we return replaces it. We fill the empty fields for Twitch and
-// return every other response unchanged.
+// and whatever we return replaces it. We fill the empty fields for those
+// providers and return every other response unchanged.
 //
 // Zitadel replaces the whole response with our reply, so this must always echo
 // the response back, even when it changes nothing.
@@ -37,17 +38,32 @@ function validSignature(body: string, header: string | undefined, key: string): 
   return sigs.some((s) => s.length === expected.length && timingSafeEqual(s, expected));
 }
 
-// Twitch's userinfo, as Zitadel stored it. The Generic OAuth user is serialized
-// as {"RawInfo": {...}}; accept the bare object too in case that changes.
-function twitchInfo(resp: Json): { username?: string; email?: string; emailVerified: boolean } {
-  const raw = resp.idpInformation?.rawInformation ?? {};
-  const info = (raw.RawInfo ?? raw) as Json;
-  const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
-  return {
+interface ProviderProfile { username?: string; email?: string; emailVerified: boolean }
+
+const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+
+// How to read each Generic OAuth provider's userinfo, keyed by the platform key
+// used in ZITADEL_IDP_* (see config.zitadel.idps).
+const PROFILE_READERS: Record<string, (info: Json) => ProviderProfile> = {
+  // https://id.twitch.tv/oauth2/userinfo (fields requested through ?claims= on the authorize URL)
+  twitch: (info) => ({
     username: str(info.preferred_username),
     email: str(info.email),
     emailVerified: info.email_verified === true,
-  };
+  }),
+  // https://discord.com/api/users/@me (scopes: identify email)
+  discord: (info) => ({
+    username: str(info.global_name) ?? str(info.username),
+    email: str(info.email),
+    emailVerified: info.verified === true,
+  }),
+};
+
+// The provider's userinfo, as Zitadel stored it. The Generic OAuth user is
+// serialized as {"RawInfo": {...}}; accept the bare object too in case that changes.
+function rawUserinfo(resp: Json): Json {
+  const raw = resp.idpInformation?.rawInformation ?? {};
+  return (raw.RawInfo ?? raw) as Json;
 }
 
 // Fills the empty profile fields of a new-user request (the deprecated
@@ -74,15 +90,18 @@ function fillHuman(target: Json | undefined, username?: string, email?: string, 
   }
 }
 
-export function mapTwitchIntent(resp: Json, twitchIdpId: string): boolean {
-  if (!twitchIdpId || resp.idpInformation?.idpId !== twitchIdpId) return false;
-  const { username, email, emailVerified } = twitchInfo(resp);
-  if (!username && !email) return false;
+// Returns the platform key it mapped, or undefined if it left the response alone.
+export function mapIntent(resp: Json, idps: Record<string, string>): string | undefined {
+  const key = idps[resp.idpInformation?.idpId ?? ''];
+  const read = key ? PROFILE_READERS[key] : undefined;
+  if (!read) return undefined; // Google and other providers Zitadel maps itself
+  const { username, email, emailVerified } = read(rawUserinfo(resp));
+  if (!username && !email) return undefined;
 
   if (username && !resp.idpInformation.userName) resp.idpInformation.userName = username;
 
   // Zitadel login name: the email, as for Google sign-ins, so it can't collide
-  // with another user's provider name. The Twitch name becomes the display name.
+  // with another user's provider name. The provider name becomes the display name.
   const loginName = email ?? username;
 
   const add = resp.addHumanUser as Json | undefined;
@@ -95,7 +114,7 @@ export function mapTwitchIntent(resp: Json, twitchIdpId: string): boolean {
     if (loginName && !create.username) create.username = loginName;
     fillHuman(create.human, username, email, emailVerified);
   }
-  return true;
+  return key;
 }
 
 export async function registerZitadelActionRoutes(app: FastifyInstance) {
@@ -123,10 +142,8 @@ export async function registerZitadelActionRoutes(app: FastifyInstance) {
       const resp = payload.response as Json | undefined;
       if (!resp || typeof resp !== 'object') return reply.code(400).send({ error: 'no response in payload' });
 
-      const twitchIdpId = Object.entries(config.zitadel.idps).find(([, key]) => key === 'twitch')?.[0] ?? '';
-      if (mapTwitchIntent(resp, twitchIdpId)) {
-        req.log.info({ fullMethod: payload.fullMethod }, 'zitadel action: mapped Twitch profile');
-      }
+      const mapped = mapIntent(resp, config.zitadel.idps);
+      if (mapped) req.log.info({ provider: mapped }, 'zitadel action: mapped provider profile');
       return reply.type('application/json').send(JSON.stringify(resp));
     });
   });
