@@ -1,15 +1,17 @@
 import { randomUUID, createHash } from 'node:crypto';
-import path from 'node:path';
-import fs from 'node:fs';
 import { schedule as cronSchedule } from 'node-cron';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { config } from '../config';
-import { db, queries, listBySubmitter, pendingPayloadValues } from '../db';
+import {
+  insertSubmission, insertSubmissions, listBySubmitter, many, pendingPayloadValues, run, type NewSubmission,
+} from '../db';
+import { clientIp } from '../clientIp';
+import { connectedAccounts } from '../zitadel';
 import { resolveTableId } from '../teable';
 import { mapLimit } from '../async';
 import { requireUser, optionalUser } from '../userAuth';
 import {
-  upsertUser, submitFlairRequest, clearFlairRequest, clearFlair, confirmFlairCode, getProfile, getUser,
+  upsertUser, submitFlairRequest, clearFlairRequest, clearFlair, confirmFlairCode, getProfile, getUser, getUsers,
   setDisplaySource, setShowCredit, publicDisplayName,
   markWeeklyCompleted, clearWeeklyCompleted, completedWeeklySetIds,
 } from '../users';
@@ -30,27 +32,26 @@ const EXPORT_TABLES: Record<string, { label: string; tableName: string }> = {
   weekly: { label: 'Weekly Sets',   tableName: 'Weekly Sets' },
 };
 
-// Persistent export state: hash + timestamp for each table, survives restarts.
+// Persistent export state: hash + timestamp for each table, kept in Postgres so
+// it survives restarts and failovers. Held in memory between writes.
 interface ExportEntry { hash: string; exportedAt: string }
-const STATE_FILE = path.join(config.dataDir, 'export-state.json');
+const exportState = new Map<string, ExportEntry>();
 
-function loadState(): Map<string, ExportEntry> {
-  try {
-    const raw = fs.readFileSync(STATE_FILE, 'utf8');
-    const obj = JSON.parse(raw) as Record<string, ExportEntry>;
-    return new Map(Object.entries(obj));
-  } catch {
-    return new Map();
-  }
+async function loadState(): Promise<void> {
+  const rows = await many<{ slug: string; hash: string; exported_at: string }>(`SELECT * FROM export_state`);
+  for (const r of rows) exportState.set(r.slug, { hash: r.hash, exportedAt: r.exported_at });
 }
 
-function saveState(state: Map<string, ExportEntry>): void {
+async function saveState(slug: string, entry: ExportEntry): Promise<void> {
+  exportState.set(slug, entry);
   try {
-    fs.writeFileSync(STATE_FILE, JSON.stringify(Object.fromEntries(state), null, 2));
+    await run(
+      `INSERT INTO export_state (slug, hash, exported_at) VALUES ($1, $2, $3)
+       ON CONFLICT (slug) DO UPDATE SET hash = excluded.hash, exported_at = excluded.exported_at`,
+      [slug, entry.hash, entry.exportedAt],
+    );
   } catch { /* non-fatal — state remains correct in memory until next restart */ }
 }
-
-const exportState = loadState();
 
 // Most items one batch submit may carry. Sized to comfortably cover every frog
 // currently missing stats, while bounding the Teable lookups one request makes.
@@ -71,6 +72,8 @@ const IMAGE_EXT: Record<string, string> = {
 };
 
 export async function registerPublicRoutes(app: FastifyInstance) {
+  await loadState();
+
   // Advertises the accepted submission types (handy for the website / debugging).
   app.get('/api/types', async () =>
     listHandlers().map((h) => ({ type: h.type, label: h.label, acceptsScreenshot: !!h.acceptsScreenshot })),
@@ -79,7 +82,7 @@ export async function registerPublicRoutes(app: FastifyInstance) {
   // Active site-wide announcement banners, newest first. Public — no auth, so
   // the SPA can show maintenance/outage notices to anonymous visitors too.
   app.get('/api/alerts', async () =>
-    listActiveAlerts().map(a => ({
+    (await listActiveAlerts()).map(a => ({
       id: a.id,
       message: a.message,
       level: a.level,
@@ -88,10 +91,11 @@ export async function registerPublicRoutes(app: FastifyInstance) {
   );
 
   // The signed-in user's own profile. Records/refreshes the user on every call
-  // (so the directory builds itself as people sign in) and returns their badges.
+  // (so the directory builds itself as people sign in) and returns their badges
+  // and linked platforms (re-read from Zitadel each time).
   app.get('/api/me', { preHandler: requireUser }, async (req) => {
-    const { sub, username, connected } = req.user!;
-    upsertUser(sub, username, connected);
+    const { sub, username } = req.user!;
+    await upsertUser(sub, username, await connectedAccounts(sub));
     return getProfile(sub);
   });
 
@@ -101,10 +105,10 @@ export async function registerPublicRoutes(app: FastifyInstance) {
     '/api/me/display-source',
     { preHandler: requireUser },
     async (req, reply) => {
-      const { sub, username, connected } = req.user!;
-      upsertUser(sub, username, connected);
+      const { sub, username } = req.user!;
+      await upsertUser(sub, username, await connectedAccounts(sub));
       const source = typeof req.body?.source === 'string' ? req.body.source : '';
-      if (!setDisplaySource(sub, source)) return reply.code(400).send({ error: 'Unknown display name source.' });
+      if (!(await setDisplaySource(sub, source))) return reply.code(400).send({ error: 'Unknown display name source.' });
       return getProfile(sub);
     },
   );
@@ -114,10 +118,10 @@ export async function registerPublicRoutes(app: FastifyInstance) {
     '/api/me/show-credit',
     { preHandler: requireUser },
     async (req, reply) => {
-      const { sub, username, connected } = req.user!;
-      upsertUser(sub, username, connected);
+      const { sub, username } = req.user!;
+      await upsertUser(sub, username);
       if (typeof req.body?.show !== 'boolean') return reply.code(400).send({ error: '`show` must be true or false.' });
-      setShowCredit(sub, req.body.show);
+      await setShowCredit(sub, req.body.show);
       return getProfile(sub);
     },
   );
@@ -130,10 +134,9 @@ export async function registerPublicRoutes(app: FastifyInstance) {
       .filter(s => /^[\w-]{1,128}$/.test(s))
       .slice(0, 50);
     const names: Record<string, string> = {};
-    for (const sub of subs) {
-      const user = getUser(sub);
-      const name = user && user.show_credit !== 0 && publicDisplayName(user);
-      if (name) names[sub] = name;
+    for (const user of await getUsers(subs)) {
+      const name = user.show_credit !== 0 && publicDisplayName(user);
+      if (name) names[user.sub] = name;
     }
     return names;
   });
@@ -146,10 +149,10 @@ export async function registerPublicRoutes(app: FastifyInstance) {
     { preHandler: requireUser },
     async (req, reply) => {
       const { sub, username } = req.user!;
-      upsertUser(sub, username);
+      await upsertUser(sub, username);
       const code = typeof req.body?.code === 'string' ? req.body.code.trim().slice(0, 80) : '';
       if (!code) return reply.code(400).send({ error: 'A friend code is required.' });
-      submitFlairRequest(sub, code);
+      await submitFlairRequest(sub, code);
       notify('flair.requested', {
         id: sub,
         type: 'flair',
@@ -165,10 +168,10 @@ export async function registerPublicRoutes(app: FastifyInstance) {
   // user's perspective; which one applies depends on their current state.
   app.delete('/api/me/flair', { preHandler: requireUser }, async (req) => {
     const { sub, username } = req.user!;
-    upsertUser(sub, username);
-    const user = getUser(sub);
-    if (user?.flair_status) clearFlairRequest(sub);
-    else clearFlair(sub);
+    await upsertUser(sub, username);
+    const user = await getUser(sub);
+    if (user?.flair_status) await clearFlairRequest(sub);
+    else await clearFlair(sub);
     return getProfile(sub);
   });
 
@@ -179,11 +182,11 @@ export async function registerPublicRoutes(app: FastifyInstance) {
     { preHandler: requireUser },
     async (req, reply) => {
       const { sub, username } = req.user!;
-      upsertUser(sub, username);
+      await upsertUser(sub, username);
       const passphrase = typeof req.body?.passphrase === 'string' ? req.body.passphrase : '';
       if (!passphrase.trim()) return reply.code(400).send({ error: 'Enter the confirmation code.' });
-      const ok = confirmFlairCode(sub, passphrase);
-      return reply.send({ ok, profile: getProfile(sub) });
+      const ok = await confirmFlairCode(sub, passphrase);
+      return reply.send({ ok, profile: await getProfile(sub) });
     },
   );
 
@@ -191,7 +194,7 @@ export async function registerPublicRoutes(app: FastifyInstance) {
   // render the checkbox column and "hide completed" filter client-side.
   app.get('/api/me/weekly-completions', { preHandler: requireUser }, async (req) => {
     const { sub, username } = req.user!;
-    upsertUser(sub, username);
+    await upsertUser(sub, username);
     return completedWeeklySetIds(sub);
   });
 
@@ -200,8 +203,8 @@ export async function registerPublicRoutes(app: FastifyInstance) {
     { preHandler: requireUser },
     async (req) => {
       const { sub, username } = req.user!;
-      upsertUser(sub, username);
-      markWeeklyCompleted(sub, req.params.id);
+      await upsertUser(sub, username);
+      await markWeeklyCompleted(sub, req.params.id);
       return completedWeeklySetIds(sub);
     },
   );
@@ -211,15 +214,15 @@ export async function registerPublicRoutes(app: FastifyInstance) {
     { preHandler: requireUser },
     async (req) => {
       const { sub, username } = req.user!;
-      upsertUser(sub, username);
-      clearWeeklyCompleted(sub, req.params.id);
+      await upsertUser(sub, username);
+      await clearWeeklyCompleted(sub, req.params.id);
       return completedWeeklySetIds(sub);
     },
   );
 
   // The signed-in user's own submission history, newest first, with statuses.
   app.get('/api/me/submissions', { preHandler: requireUser }, async (req) =>
-    listBySubmitter(req.user!.sub).map(r => ({
+    (await listBySubmitter(req.user!.sub)).map(r => ({
       id: r.id,
       type: r.type,
       summary: r.summary,
@@ -300,23 +303,26 @@ export async function registerPublicRoutes(app: FastifyInstance) {
 
       const id = randomUUID();
       let screenshot: string | null = null;
+      let screenshotOriginal: string | null = null;
       if (fileBuf && handler.acceptsScreenshot) {
-        ({ screenshot } = await storeScreenshot(id, fileBuf, { autoCrop: !!handler.autoCropScreenshot }));
+        ({ screenshot, original: screenshotOriginal } =
+          await storeScreenshot(id, fileBuf, { autoCrop: !!handler.autoCropScreenshot }));
       }
 
       // Surface the attribution link (if any) in the review note column.
       const data = parsed.data as { sourceLink?: string };
-      const ipHash = hashIp(req.ip);
+      const ipHash = hashIp(clientIp(req));
 
       const summary = handler.summarize(parsed.data);
       const createdAt = new Date().toISOString();
 
-      queries.insert.run({
+      await insertSubmission({
         id,
         type: handler.type,
         payload: JSON.stringify(parsed.data),
         summary,
         screenshot,
+        screenshot_original: screenshotOriginal,
         submitter_note: data.sourceLink ?? null,
         submitter_sub: req.user?.sub ?? null,
         submitter_name: req.user?.username ?? null,
@@ -326,7 +332,7 @@ export async function registerPublicRoutes(app: FastifyInstance) {
       });
 
       // Also record the user in the directory so the admin can badge them later.
-      if (req.user) upsertUser(req.user.sub, req.user.username);
+      if (req.user) await upsertUser(req.user.sub, req.user.username);
 
       req.log.info({ id, type: handler.type, submitter: req.user?.username ?? null }, 'submission received');
       notify('submission.created', { id, type: handler.type, summary, submitterNote: data.sourceLink, createdAt });
@@ -406,12 +412,12 @@ export async function registerPublicRoutes(app: FastifyInstance) {
       });
 
       const createdAt = new Date().toISOString();
-      const ipHash = hashIp(req.ip);
+      const ipHash = hashIp(clientIp(req));
       const batchId = randomUUID();
       const seen = new Set<string>();
       const shots: { id: string; buf: Buffer }[] = [];
       const results: ({ index: number; ok: true; id: string } | { index: number; ok: false; error: string })[] = [];
-      const rows: { id: string; summary: string; [col: string]: unknown }[] = [];
+      const rows: NewSubmission[] = [];
       const summaries: string[] = [];
 
       checked.forEach((c, index) => {
@@ -431,6 +437,7 @@ export async function registerPublicRoutes(app: FastifyInstance) {
           payload: JSON.stringify(c.data),
           summary,
           screenshot: null,
+          screenshot_original: null,
           submitter_note: null,
           submitter_sub: req.user?.sub ?? null,
           submitter_name: req.user?.username ?? null,
@@ -445,10 +452,11 @@ export async function registerPublicRoutes(app: FastifyInstance) {
       if (rows.length > 0) {
         for (const { id, buf } of shots) {
           const row = rows.find(r => r.id === id)!;
-          ({ screenshot: row.screenshot } = await storeScreenshot(id, buf, { autoCrop: !!handler.autoCropScreenshot }));
+          ({ screenshot: row.screenshot, original: row.screenshot_original } =
+            await storeScreenshot(id, buf, { autoCrop: !!handler.autoCropScreenshot }));
         }
-        db.transaction(() => { for (const r of rows) queries.insert.run(r); })();
-        if (req.user) upsertUser(req.user.sub, req.user.username);
+        await insertSubmissions(rows);
+        if (req.user) await upsertUser(req.user.sub, req.user.username);
 
         req.log.info({ type: handler.type, count: rows.length, submitter: req.user?.username ?? null }, 'batch submission received');
         const shown = summaries.slice(0, 10).join('\n');
@@ -482,12 +490,11 @@ export async function registerPublicRoutes(app: FastifyInstance) {
         }
         const buf = Buffer.from(await res.arrayBuffer());
         const hash = createHash('sha256').update(buf).digest('hex').slice(0, 8);
-        exportState.set(slug, { hash, exportedAt: new Date().toISOString() });
+        await saveState(slug, { hash, exportedAt: new Date().toISOString() });
       } catch (err) {
         app.log.warn({ slug, err }, 'hash refresh: fetch failed');
       }
     }
-    saveState(exportState);
     app.log.info('export hash refresh complete');
   }
 
@@ -550,8 +557,7 @@ export async function registerPublicRoutes(app: FastifyInstance) {
     const buf = Buffer.from(bytes);
     const hash = createHash('sha256').update(buf).digest('hex').slice(0, 8);
     const exportedAt = new Date().toISOString();
-    exportState.set(table, { hash, exportedAt });
-    saveState(exportState);
+    await saveState(table, { hash, exportedAt });
 
     const date = exportedAt.slice(0, 10);
     reply.header('Content-Type', 'text/csv; charset=utf-8');

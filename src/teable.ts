@@ -1,5 +1,3 @@
-import { readFile } from 'node:fs/promises';
-import { basename } from 'node:path';
 import { config } from './config';
 
 // Minimal privileged Teable client. The write token lives only in this process,
@@ -80,10 +78,9 @@ export async function teableUploadAttachmentToRecord(
   tableId: string,
   recordId: string,
   fieldId: string,
-  filePath: string,
+  file: { name: string; data: Buffer },
 ): Promise<void> {
-  const data = await readFile(filePath);
-  const name = basename(filePath);
+  const { name, data } = file;
   const ext = name.split('.').pop()?.toLowerCase();
   const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : ext === 'gif' ? 'image/gif' : 'image/jpeg';
   const form = new FormData();

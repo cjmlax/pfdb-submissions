@@ -1,8 +1,13 @@
 import Fastify from 'fastify';
+import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
 import { config } from './config';
+import { migrate } from './db';
+import { seedAutoBadges } from './users';
+import { clientIp } from './clientIp';
+import { registerLinkRoutes } from './routes/links';
 import { registerPublicRoutes } from './routes/public';
 import { registerAdminRoutes } from './routes/admin';
 import { registerAdminBadgeRoutes } from './routes/adminBadges';
@@ -15,11 +20,15 @@ import { registerWeeklySetsPoller } from './tasks/weeklySetsPoller';
 async function main() {
   const app = Fastify({
     logger: { level: process.env.LOG_LEVEL ?? 'info' },
-    trustProxy: true, // we sit behind Nginx Proxy Manager
+    trustProxy: true, // behind cloudflared + HAProxy; see clientIp for the visitor's address
   });
 
+  await migrate();
+  await seedAutoBadges();
+
+  await app.register(cookie);
   await app.register(multipart, { limits: { fileSize: config.upload.maxBytes, files: 1 } });
-  await app.register(rateLimit, { max: 100, timeWindow: '1 minute' });
+  await app.register(rateLimit, { max: 100, timeWindow: '1 minute', keyGenerator: clientIp });
   await app.register(cors, {
     origin: config.allowedOrigin.includes('*') ? true : config.allowedOrigin,
     methods: ['GET', 'POST', 'PATCH', 'DELETE'],
@@ -33,10 +42,11 @@ async function main() {
   await registerAdminAlertRoutes(app);
   await registerImageRoutes(app);
   await registerModPairRoutes(app);
+  await registerLinkRoutes(app);
 
   await app.listen({ port: config.port, host: config.host });
   app.log.info(
-    `pfdb-submissions up — data=${config.dataDir}, origins=${config.allowedOrigin.join(',')}`,
+    `pfdb-submissions up — site=${config.siteUrl}, origins=${config.allowedOrigin.join(',')}`,
   );
   registerVersionPoller(app.log);
   registerWeeklySetsPoller(app.log);

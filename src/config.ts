@@ -12,9 +12,11 @@ function opt(name: string, def: string): string {
 // incomplete config. Admin auth is handled entirely by the SPA bearer token
 // (see userAuth below) — there is no cookie/session login.
 export const config = {
-  port: Number(opt('PORT', '8080')),
+  port: Number(opt('PORT', '8090')),
   host: opt('HOST', '0.0.0.0'),
-  dataDir: opt('DATA_DIR', './data'),
+  // Public origin of the site; the worker is served under it at /api/*. Used to
+  // build the account-linking callback URL and the redirect back to /account.
+  siteUrl: opt('SITE_URL', 'https://pfdatabase.com').replace(/\/$/, ''),
   allowedOrigin: opt('ALLOWED_ORIGIN', '*')
     .split(',')
     .map((s) => s.trim())
@@ -24,23 +26,51 @@ export const config = {
   // COOKIE_SECRET so existing deployments keep producing the same hashes.
   ipHashSecret: opt('IP_HASH_SECRET', opt('COOKIE_SECRET', 'change-me-ip-salt')),
 
-  // Verification config for tokens issued to the public SPA. This is a separate
-  // Authentik application from the admin OIDC above. These are public values
-  // (the client id is not a secret), so the defaults are safe to ship.
+  // Postgres, reached through the node's HAProxy (port 5000), which always
+  // points at the current primary.
+  databaseUrl: opt('DATABASE_URL', ''),
+
+  // Verification config for id_tokens issued to the public SPA (the Zitadel
+  // pfdb-web app). These are public values, so the defaults are safe to ship.
   userAuth: {
-    issuer:      opt('USER_OIDC_ISSUER', 'https://pfdbauth.cjmlax.com/application/o/pfdb/'),
-    clientId:    opt('USER_OIDC_CLIENT_ID', 'gYpSjz6qGj1e1HUPihJeMt9aTP9I0ymgA877eScc'),
-    groupsClaim: opt('USER_OIDC_GROUPS_CLAIM', 'pfdb_groups'),
-    // Group (within pfdb_groups) that grants SPA admin powers. The SPA scope
-    // mapping strips the "pfdb-" prefix, so "pfdb-admins" arrives as "admins".
-    adminGroup:  opt('USER_OIDC_ADMIN_GROUP', 'admins'),
-    // Group for moderators — drives the auto-managed Mod badge (see
+    issuer:     opt('USER_OIDC_ISSUER', 'https://auth.pfdatabase.com'),
+    clientId:   opt('USER_OIDC_CLIENT_ID', '394712072014790658'),
+    // Zitadel's project roles claim: an object keyed by role name.
+    rolesClaim: opt('USER_OIDC_ROLES_CLAIM', 'urn:zitadel:iam:org:project:roles'),
+    // Role that grants SPA admin powers.
+    adminRole:  opt('USER_OIDC_ADMIN_ROLE', 'admins'),
+    // Role for moderators — drives the auto-managed Mod badge (see
     // users.syncGroupBadge) and gates the mod tools (see userAuth.requireUserMod).
-    modGroup:    opt('USER_OIDC_MOD_GROUP', 'mods'),
+    modRole:    opt('USER_OIDC_MOD_ROLE', 'mods'),
+  },
+
+  // Zitadel's API, reached inside the compose network. Zitadel picks its
+  // instance from the Host header, so every call sends publicHost (see zitadel.ts).
+  // The service token belongs to the pfdb-worker machine user (Org User Manager),
+  // used to read and add a user's identity provider links.
+  zitadel: {
+    apiUrl:       opt('ZITADEL_API_URL', 'http://zitadel:8080').replace(/\/$/, ''),
+    publicHost:   opt('ZITADEL_PUBLIC_HOST', 'auth.pfdatabase.com'),
+    serviceToken: opt('ZITADEL_SERVICE_TOKEN', ''),
+    // Identity provider id → the platform key the site uses for it.
+    idps: Object.fromEntries(
+      (['discord', 'twitch', 'google'] as const)
+        .map((key) => [opt(`ZITADEL_IDP_${key.toUpperCase()}`, ''), key])
+        .filter(([id]) => id),
+    ) as Record<string, string>,
+  },
+
+  // Garage bucket for submission screenshots, reached over the mesh.
+  s3: {
+    endpoint:        opt('S3_ENDPOINT', ''),
+    region:          opt('S3_REGION', 'garage'),
+    bucket:          opt('S3_BUCKET', 'pfdb-submissions'),
+    accessKeyId:     opt('S3_ACCESS_KEY_ID', ''),
+    secretAccessKey: opt('S3_SECRET_ACCESS_KEY', ''),
   },
 
   teable: {
-    baseUrl: opt('TEABLE_BASE_URL', 'https://teable.cjmlax.com').replace(/\/$/, ''),
+    baseUrl: opt('TEABLE_BASE_URL', 'https://teable.pfdatabase.com').replace(/\/$/, ''),
     token: opt('TEABLE_TOKEN', ''),
     // Table IDs are resolved by name at runtime (see resolveTableId) and cached,
     // so individual table IDs no longer need to be configured — only the base.
@@ -73,7 +103,7 @@ export const config = {
 
   notify: {
     webhookUrls: opt('WEBHOOK_URL', '').split(',').map((s) => s.trim()).filter(Boolean),
-    adminUrl: opt('ADMIN_URL', '').replace(/\/$/, ''),
+    adminUrl: opt('ADMIN_URL', opt('SITE_URL', 'https://pfdatabase.com')).replace(/\/$/, ''),
     on: {
       submit:  opt('WEBHOOK_ON_SUBMIT',  'true') !== 'false',
       approve: opt('WEBHOOK_ON_APPROVE', 'true') !== 'false',

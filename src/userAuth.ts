@@ -3,20 +3,19 @@ import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from 'jose';
 import { config } from './config';
 import { syncGroupBadge, ADMIN_BADGE_ID, MOD_BADGE_ID } from './users';
 
-// Identifies a regular (non-admin) signed-in user from the public SPA. The SPA
-// sends its OIDC **id_token** as a Bearer token; we verify the signature against
-// Authentik's JWKS and pull the identity out. The id_token (not the access token)
-// is used because it already carries our custom claims — pfdb_groups and the
-// connected accounts — so no extra userinfo round-trip is needed. This mirrors
-// how the admin OIDC flow verifies tokens, but points at the separate public app.
+// Identifies a signed-in user from the public SPA. The SPA sends its OIDC
+// **id_token** as a Bearer token; we verify the signature against Zitadel's JWKS
+// and pull the identity out. The id_token (not the access token) is used because
+// the pfdb-web app puts the user's project roles in it, so no extra userinfo
+// round-trip is needed. Linked provider accounts aren't in the token; see
+// zitadel.connectedAccounts.
 
 declare module 'fastify' {
   interface FastifyRequest {
     user?: {
       sub: string;
       username: string | null;
-      groups: string[];
-      connected: Record<string, string> | null; // connected_accounts claim, null if absent
+      roles: string[];
     };
   }
 }
@@ -54,23 +53,27 @@ async function verify(req: FastifyRequest): Promise<FastifyRequest['user'] | nul
     const sub = typeof payload.sub === 'string' ? payload.sub : null;
     if (!sub) return null;
 
-    const groupsClaim = payload[config.userAuth.groupsClaim];
-    const groups = Array.isArray(groupsClaim) ? groupsClaim.map(String) : [];
+    // Zitadel's roles claim is an object keyed by role name:
+    // { "admins": { "<org id>": "<org domain>" }, ... }.
+    const rolesClaim = payload[config.userAuth.rolesClaim];
+    const roles = rolesClaim && typeof rolesClaim === 'object' && !Array.isArray(rolesClaim)
+      ? Object.keys(rolesClaim)
+      : [];
+
+    // Users created from a provider sign-in often get their email as the login
+    // name; never use that as a (possibly public) username.
+    const preferred = typeof payload.preferred_username === 'string' ? payload.preferred_username : null;
     const username =
-      typeof payload.preferred_username === 'string' ? payload.preferred_username
+      preferred && !preferred.includes('@') ? preferred
       : typeof payload.name === 'string' ? payload.name
-      : null;
-    const connectedClaim = payload.connected_accounts;
-    const connected = connectedClaim && typeof connectedClaim === 'object' && !Array.isArray(connectedClaim)
-      ? Object.fromEntries(Object.entries(connectedClaim).map(([k, v]) => [k, String(v)]))
       : null;
 
     // Self-healing: sync the auto-managed Admin/Mod badges to this request's
-    // live group claims, so they're granted/revoked without any manual action.
-    syncGroupBadge(sub, ADMIN_BADGE_ID, groups.includes(config.userAuth.adminGroup));
-    syncGroupBadge(sub, MOD_BADGE_ID, groups.includes(config.userAuth.modGroup));
+    // live roles, so they're granted/revoked without any manual action.
+    await syncGroupBadge(sub, ADMIN_BADGE_ID, roles.includes(config.userAuth.adminRole));
+    await syncGroupBadge(sub, MOD_BADGE_ID, roles.includes(config.userAuth.modRole));
 
-    return { sub, username, groups, connected };
+    return { sub, username, roles };
   } catch {
     return null;
   }
@@ -90,30 +93,30 @@ export const optionalUser: preHandlerHookHandler = async (req) => {
   if (user) req.user = user;
 };
 
-// Like requireUser, but also requires the SPA admin group. Lets the React admin
+// Like requireUser, but also requires the SPA admin role. Lets the React admin
 // UI manage badges with the signed-in user's bearer token (no admin cookie).
 export const requireUserAdmin: preHandlerHookHandler = async (req, reply) => {
   const user = await verify(req);
   if (!user) return reply.code(401).send({ error: 'unauthorized' });
-  if (!user.groups.includes(config.userAuth.adminGroup)) {
+  if (!user.roles.includes(config.userAuth.adminRole)) {
     return reply.code(403).send({ error: 'forbidden' });
   }
   req.user = user;
 };
 
-// Like requireUser, but also requires the SPA mod group. Deliberately separate
+// Like requireUser, but also requires the SPA mod role. Deliberately separate
 // from admin: a user can hold either role without the other, and admin alone
 // doesn't grant mod tools.
 export const requireUserMod: preHandlerHookHandler = async (req, reply) => {
   const user = await verify(req);
   if (!user) return reply.code(401).send({ error: 'unauthorized' });
-  if (!user.groups.includes(config.userAuth.modGroup)) {
+  if (!user.roles.includes(config.userAuth.modRole)) {
     return reply.code(403).send({ error: 'forbidden' });
   }
   req.user = user;
 };
 
-// True if the signed-in user is in the given PFDB group (e.g. 'admin', 'mod').
-export function userInGroup(req: FastifyRequest, group: string): boolean {
-  return req.user?.groups.includes(group) ?? false;
+// True if the signed-in user holds the given PFDB role (e.g. 'admins', 'mods').
+export function userHasRole(req: FastifyRequest, role: string): boolean {
+  return req.user?.roles.includes(role) ?? false;
 }

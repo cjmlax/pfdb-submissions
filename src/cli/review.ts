@@ -1,45 +1,51 @@
 /**
  * Terminal reviewer — an alternative to the web admin page that needs no auth
- * setup. Run it on the host (or `docker compose exec`) with the same env so it
- * shares the SQLite file and the privileged Teable token.
+ * setup. Run it inside the worker container (the active node's) so it shares
+ * the database, screenshot bucket, and privileged Teable token.
  *
  *   npm run review            # interactive: approve/reject each pending item
  *   npm run review -- --list  # just print the pending queue and exit
+ *   # deployed: docker compose exec worker node dist/cli/review.js
  */
 import readline from 'node:readline/promises';
-import path from 'node:path';
 import { stdin as input, stdout as output } from 'node:process';
-import { config } from '../config';
-import { listByStatus, getById, queries, uploadsDir } from '../db';
+import { listByStatus, getById, setStatus, deleteById, pool } from '../db';
 import { getHandler } from '../handlers/registry';
-import { removeOriginalScreenshot } from '../imageProcess';
+import { deleteObject, getObject } from '../storage';
 
 async function approve(id: string): Promise<void> {
-  const row = getById(id);
+  const row = await getById(id);
   if (!row || row.status !== 'pending') return;
   const handler = getHandler(row.type);
   if (!handler) throw new Error(`no handler for type "${row.type}"`);
   const payload = JSON.parse(row.payload);
-  const screenshotPath = row.screenshot ? path.join(uploadsDir, row.screenshot) : null;
-  const ref = (await handler.pushDown(payload, { screenshotPath })) || null;
-  queries.setStatus.run({
+  const data = row.screenshot ? await getObject(row.screenshot) : null;
+  if (row.screenshot && !data) throw new Error(`screenshot ${row.screenshot} is missing from storage`);
+  const ref = (await handler.pushDown(payload, {
+    screenshot: row.screenshot && data ? { name: row.screenshot, data } : null,
+    submitterSub: row.submitter_sub,
+    submitterName: row.submitter_name,
+  })) || null;
+  await setStatus({
     id, status: 'pushed', reviewer_note: null, reviewed_at: new Date().toISOString(), pushed_ref: ref,
   });
-  removeOriginalScreenshot(id);
+  await deleteObject(row.screenshot_original);
   console.log(`  → pushed${ref ? ` (${ref})` : ''}`);
 }
 
-function reject(id: string, note: string): void {
-  queries.setStatus.run({
-    id, status: 'rejected', reviewer_note: note || null, reviewed_at: new Date().toISOString(), pushed_ref: null,
-  });
-  removeOriginalScreenshot(id);
+// Rejections aren't retained, matching the web admin page: row and screenshots go.
+async function reject(id: string): Promise<void> {
+  const row = await getById(id);
+  if (!row) return;
+  await deleteObject(row.screenshot_original);
+  await deleteObject(row.screenshot);
+  await deleteById(id);
   console.log('  → rejected');
 }
 
 async function main() {
-  const pending = listByStatus('pending');
-  console.log(`\npfdb submissions — ${pending.length} pending (data: ${config.dataDir})\n`);
+  const pending = await listByStatus('pending');
+  console.log(`\npfdb submissions — ${pending.length} pending\n`);
 
   if (pending.length === 0) return;
 
@@ -55,7 +61,7 @@ async function main() {
     for (const r of pending) {
       console.log(`\n${r.summary}`);
       if (r.submitter_note) console.log(`  note: “${r.submitter_note}”`);
-      if (r.screenshot) console.log(`  screenshot: ${path.join(uploadsDir, r.screenshot)}`);
+      if (r.screenshot) console.log(`  screenshot: ${r.screenshot} (view it on the web admin page)`);
       const ans = (await rl.question('  approve / reject / skip? [a/r/s] ')).trim().toLowerCase();
       if (ans === 'a') {
         try {
@@ -64,8 +70,7 @@ async function main() {
           console.error(`  ✗ push failed: ${e instanceof Error ? e.message : e}`);
         }
       } else if (ans === 'r') {
-        const note = await rl.question('  reason (optional): ');
-        reject(r.id, note.trim());
+        await reject(r.id);
       } else {
         console.log('  → skipped');
       }
@@ -76,7 +81,9 @@ async function main() {
   console.log('\nDone.');
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+main()
+  .catch((e) => {
+    console.error(e);
+    process.exitCode = 1;
+  })
+  .finally(() => pool.end());

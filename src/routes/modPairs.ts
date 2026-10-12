@@ -134,8 +134,8 @@ async function checkPair(pair: Pair, pendingCombos: Set<string>): Promise<Ready>
   return { frogA, frogB, existingId: record.id };
 }
 
-function pendingComboKeys(): Set<string> {
-  return new Set(pendingPayloadPairs('combo', 'frog1Id', 'frog2Id').map(([a, b]) => pairKey(a, b)));
+async function pendingComboKeys(): Promise<Set<string>> {
+  return new Set((await pendingPayloadPairs('combo', 'frog1Id', 'frog2Id')).map(([a, b]) => pairKey(a, b)));
 }
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : 'Could not check this pair.');
@@ -156,7 +156,7 @@ export async function registerModPairRoutes(app: FastifyInstance) {
       } catch (e) {
         return reply.code(409).send({ error: errorText(e) });
       }
-      const pending = pendingComboKeys();
+      const pending = await pendingComboKeys();
       const results = await mapLimit(parsed.data, 4, async (pair) => {
         try {
           await checkPair(pair, pending);
@@ -181,10 +181,10 @@ export async function registerModPairRoutes(app: FastifyInstance) {
 
       try {
         const version = await commonVersion();
-        const ready = await checkPair(parsed.data, pendingComboKeys());
+        const ready = await checkPair(parsed.data, await pendingComboKeys());
         const tableId = await resolveTableId(PAIRS_TABLE);
         const field = (dbFieldName: string) => resolveFieldId(tableId, { dbFieldName });
-        // Store the stable Authentik ID so attribution survives username changes.
+        // Store the stable Zitadel user ID so attribution survives username changes.
         const fields: Record<string, unknown> = {
           [await field('verified')]: true,
           [await field('submitter')]: req.user!.sub,

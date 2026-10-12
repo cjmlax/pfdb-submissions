@@ -1,21 +1,15 @@
-import path from 'node:path';
-import fs from 'node:fs';
 import type { FastifyInstance } from 'fastify';
-import { cropImage, originalScreenshotName, removeOriginalScreenshot, storeScreenshot } from '../imageProcess';
-import { getById, listByStatus, listPendingInBatch, queries, deleteById, uploadsDir, type SubmissionRow } from '../db';
+import { cropImage, storeScreenshot } from '../imageProcess';
+import {
+  getById, listByStatus, listPendingInBatch, deleteById, setStatus, updatePending, setSubmitterNote, setSubmitter,
+  type SubmissionRow,
+} from '../db';
+import { deleteObject, getObject, mimeFor, putObject } from '../storage';
 import { getHandler } from '../handlers/registry';
 import { requireUserAdmin } from '../userAuth';
 import { notify } from '../notify';
 import { broadcastSse } from '../sse';
 import { getUser } from '../users';
-
-const MIME_BY_EXT: Record<string, string> = {
-  png: 'image/png',
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  webp: 'image/webp',
-  gif: 'image/gif',
-};
 
 const IMAGE_EXT: Record<string, string> = {
   'image/png': 'png',
@@ -35,9 +29,7 @@ function toDto(r: SubmissionRow) {
     submitterSub: r.submitter_sub,
     screenshot: r.screenshot ? `/api/admin/uploads/${r.screenshot}` : null,
     // Uncropped upload, present only while an auto-cropped screenshot is pending.
-    screenshotOriginal: r.screenshot && fs.existsSync(path.join(uploadsDir, originalScreenshotName(r.id)))
-      ? `/api/admin/uploads/${originalScreenshotName(r.id)}`
-      : null,
+    screenshotOriginal: r.screenshot && r.screenshot_original ? `/api/admin/uploads/${r.screenshot_original}` : null,
     createdAt: r.created_at,
     batchId: r.batch_id,
   };
@@ -50,20 +42,22 @@ async function approveRow(row: SubmissionRow): Promise<{ ok: true; ref: string |
   if (!handler) return { ok: false, error: `no handler for type "${row.type}"` };
   try {
     const payload = JSON.parse(row.payload);
-    const screenshotPath = row.screenshot ? path.join(uploadsDir, row.screenshot) : null;
+    const data = row.screenshot ? await getObject(row.screenshot) : null;
+    if (row.screenshot && !data) throw new Error(`screenshot ${row.screenshot} is missing from storage`);
+    const screenshot = row.screenshot && data ? { name: row.screenshot, data } : null;
     const ref = (await handler.pushDown(payload, {
-      screenshotPath,
+      screenshot,
       submitterSub: row.submitter_sub,
       submitterName: row.submitter_name,
     })) || null;
-    queries.setStatus.run({
+    await setStatus({
       id: row.id, status: 'pushed', reviewer_note: null, reviewed_at: new Date().toISOString(), pushed_ref: ref,
     });
-    removeOriginalScreenshot(row.id);
+    await deleteObject(row.screenshot_original).catch(() => { /* orphan is harmless */ });
     return { ok: true, ref };
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    queries.setStatus.run({
+    await setStatus({
       id: row.id, status: 'error', reviewer_note: message, reviewed_at: new Date().toISOString(), pushed_ref: null,
     });
     return { ok: false, error: message };
@@ -71,13 +65,10 @@ async function approveRow(row: SubmissionRow): Promise<{ ok: true; ref: string |
 }
 
 // Deletes a submission and its screenshot (rejections aren't retained).
-function discardRow(row: SubmissionRow): void {
-  removeOriginalScreenshot(row.id);
-  if (row.screenshot) {
-    const p = path.join(uploadsDir, row.screenshot);
-    if (fs.existsSync(p)) fs.unlinkSync(p);
-  }
-  deleteById(row.id);
+async function discardRow(row: SubmissionRow): Promise<void> {
+  await deleteObject(row.screenshot_original);
+  await deleteObject(row.screenshot);
+  await deleteById(row.id);
 }
 
 // Notification text for a group action: "12 of 12 approved: …first few…".
@@ -94,23 +85,22 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     admin.addHook('preHandler', requireUserAdmin);
 
     // JSON list of pending submissions (the React admin page polls this).
-    admin.get('/api/admin/pending', async () => listByStatus('pending').map(toDto));
+    admin.get('/api/admin/pending', async () => (await listByStatus('pending')).map(toDto));
 
     // Serve an uploaded screenshot for review. Admin-gated, so the SPA fetches it
     // with the bearer token and renders it via an object URL.
     admin.get('/api/admin/uploads/:file', async (req, reply) => {
       const file = (req.params as { file: string }).file;
       if (!/^[\w.-]+$/.test(file)) return reply.code(400).send('bad filename');
-      const full = path.join(uploadsDir, file);
-      if (!fs.existsSync(full)) return reply.code(404).send('not found');
-      const ext = file.split('.').pop()?.toLowerCase() ?? '';
-      return reply.type(MIME_BY_EXT[ext] ?? 'application/octet-stream').send(fs.createReadStream(full));
+      const data = await getObject(file);
+      if (!data) return reply.code(404).send('not found');
+      return reply.type(mimeFor(file)).send(data);
     });
 
     // Approve → push downstream → mark pushed (or error, with the message kept).
     admin.post('/api/admin/:id/approve', async (req, reply) => {
       const id = (req.params as { id: string }).id;
-      const row = getById(id);
+      const row = await getById(id);
       if (!row) return reply.code(404).send({ error: 'not found' });
       if (row.status !== 'pending') return reply.code(409).send({ error: `already ${row.status}` });
 
@@ -128,7 +118,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     // Approve every still-pending item of a batch, one at a time. Failures are
     // recorded per item (as with a single approve) and don't stop the rest.
     admin.post<{ Params: { batchId: string } }>('/api/admin/batch/:batchId/approve', async (req, reply) => {
-      const rows = listPendingInBatch(req.params.batchId);
+      const rows = await listPendingInBatch(req.params.batchId);
       if (rows.length === 0) return reply.code(404).send({ error: 'no pending items in this batch' });
 
       const results: { id: string; summary: string; ok: boolean; error?: string }[] = [];
@@ -148,11 +138,11 @@ export async function registerAdminRoutes(app: FastifyInstance) {
 
     // Reject → discard every still-pending item of a batch.
     admin.post<{ Params: { batchId: string } }>('/api/admin/batch/:batchId/reject', async (req, reply) => {
-      const rows = listPendingInBatch(req.params.batchId);
+      const rows = await listPendingInBatch(req.params.batchId);
       if (rows.length === 0) return reply.code(404).send({ error: 'no pending items in this batch' });
 
       for (const row of rows) {
-        discardRow(row);
+        await discardRow(row);
         broadcastSse('submission', { id: row.id, action: 'rejected' });
       }
       notify('submission.rejected', { id: rows[0].id, type: rows[0].type, summary: batchSummary(rows, rows.length, 'rejected'), createdAt: rows[0].created_at });
@@ -162,7 +152,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     // Edit → update payload and/or screenshot, leave status as pending.
     admin.patch('/api/admin/:id', async (req, reply) => {
       const id = (req.params as { id: string }).id;
-      const row = getById(id);
+      const row = await getById(id);
       if (!row) return reply.code(404).send({ error: 'not found' });
       if (row.status !== 'pending') return reply.code(409).send({ error: `cannot edit: already ${row.status}` });
 
@@ -226,7 +216,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
           if (name.length > 80) return reply.code(400).send({ error: 'Display name is too long (80 characters max).' });
           submitter = { sub: `~${name}`, name };
         } else {
-          const user = getUser(submitterSub);
+          const user = await getUser(submitterSub);
           if (!user) return reply.code(400).send({ error: 'Unknown submitter — they must have signed in to the site.' });
           submitter = { sub: user.sub, name: user.username };
         }
@@ -235,22 +225,22 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       const summary = handler.summarize(payload);
 
       let screenshot = row.screenshot;
+      let screenshotOriginal = row.screenshot_original;
+      if (newFileBuf || (clearScreenshot && row.screenshot)) {
+        await deleteObject(row.screenshot);
+        await deleteObject(row.screenshot_original);
+        screenshot = screenshotOriginal = null;
+      }
       if (newFileBuf) {
-        if (row.screenshot) {
-          const oldPath = path.join(uploadsDir, row.screenshot);
-          if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
-        }
-        ({ screenshot } = await storeScreenshot(id, newFileBuf, { autoCrop: !!handler.autoCropScreenshot }));
-      } else if (clearScreenshot && row.screenshot) {
-        const oldPath = path.join(uploadsDir, row.screenshot);
-        if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
-        removeOriginalScreenshot(id);
-        screenshot = null;
+        ({ screenshot, original: screenshotOriginal } =
+          await storeScreenshot(id, newFileBuf, { autoCrop: !!handler.autoCropScreenshot }));
       }
 
-      queries.update.run({ id, payload: JSON.stringify(payload), summary, screenshot });
-      queries.setSubmitterNote.run({ id, submitter_note: (payload as { sourceLink?: string }).sourceLink ?? null });
-      if (submitter) queries.setSubmitter.run({ id, submitter_sub: submitter.sub, submitter_name: submitter.name });
+      await updatePending({
+        id, payload: JSON.stringify(payload), summary, screenshot, screenshot_original: screenshotOriginal,
+      });
+      await setSubmitterNote(id, (payload as { sourceLink?: string }).sourceLink ?? null);
+      if (submitter) await setSubmitter(id, submitter.sub, submitter.name);
       req.log.info({ id }, 'submission edited');
       broadcastSse('submission', { id, action: 'edited' });
       return { ok: true, summary };
@@ -261,22 +251,24 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     // (redoing a bad auto-crop); the original stays so it can be redone again.
     admin.post<{ Params: { id: string } }>('/api/admin/:id/crop', async (req, reply) => {
       const { id } = req.params;
-      const row = getById(id);
+      const row = await getById(id);
       if (!row) return reply.code(404).send({ error: 'not found' });
       if (!row.screenshot) return reply.code(400).send({ error: 'no screenshot' });
 
       const { left, top, right, bottom, fromOriginal } =
         req.body as { left: number; top: number; right: number; bottom: number; fromOriginal?: boolean };
-      const imgPath = path.join(uploadsDir, row.screenshot);
-      const srcPath = fromOriginal ? path.join(uploadsDir, originalScreenshotName(id)) : imgPath;
-      if (!fs.existsSync(srcPath)) return reply.code(400).send({ error: 'no original screenshot kept' });
-      const { data, ext } = await cropImage(fs.readFileSync(srcPath), { left, top, right, bottom });
+      const srcKey = fromOriginal ? row.screenshot_original : row.screenshot;
+      const src = srcKey ? await getObject(srcKey) : null;
+      if (!src) return reply.code(400).send({ error: fromOriginal ? 'no original screenshot kept' : 'screenshot missing' });
+      const { data, ext } = await cropImage(src, { left, top, right, bottom });
 
       const newFilename = `${id}.${ext}`;
-      fs.writeFileSync(path.join(uploadsDir, newFilename), data);
-      if (row.screenshot !== newFilename) fs.unlinkSync(imgPath);
+      await putObject(newFilename, data);
+      if (row.screenshot !== newFilename) await deleteObject(row.screenshot);
 
-      queries.update.run({ id, payload: row.payload, summary: row.summary, screenshot: newFilename });
+      await updatePending({
+        id, payload: row.payload, summary: row.summary, screenshot: newFilename, screenshot_original: row.screenshot_original,
+      });
       req.log.info({ id }, 'screenshot cropped');
       return { ok: true, screenshot: `/api/admin/uploads/${newFilename}` };
     });
@@ -285,10 +277,10 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     // submissions are not retained.
     admin.post('/api/admin/:id/reject', async (req, reply) => {
       const id = (req.params as { id: string }).id;
-      const row = getById(id);
+      const row = await getById(id);
       if (!row) return reply.code(404).send({ error: 'not found' });
 
-      discardRow(row);
+      await discardRow(row);
 
       notify('submission.rejected', { id, type: row.type, summary: row.summary, submitterNote: row.submitter_note, createdAt: row.created_at });
       broadcastSse('submission', { id, action: 'rejected' });

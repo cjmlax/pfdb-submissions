@@ -29,11 +29,11 @@ export async function registerAdminBadgeRoutes(app: FastifyInstance) {
       if (!/^[a-z0-9-]+$/.test(id)) {
         return reply.code(400).send({ error: 'id must be a slug: lowercase letters, digits, and hyphens' });
       }
-      upsertBadge({
+      await upsertBadge({
         id, name,
         description: b.description, icon: b.icon, color: b.color, sort_order: b.sort_order,
       });
-      return { ok: true, badge: getBadge(id) };
+      return { ok: true, badge: await getBadge(id) };
     });
 
     // Delete a badge (cascades to remove all its grants). Auto-managed badges
@@ -44,8 +44,8 @@ export async function registerAdminBadgeRoutes(app: FastifyInstance) {
       if (AUTO_BADGE_IDS.includes(id)) {
         return reply.code(400).send({ error: 'This badge is auto-managed and cannot be deleted.' });
       }
-      if (!getBadge(id)) return reply.code(404).send({ error: 'badge not found' });
-      deleteBadge(id);
+      if (!(await getBadge(id))) return reply.code(404).send({ error: 'badge not found' });
+      await deleteBadge(id);
       return { ok: true };
     });
 
@@ -53,21 +53,21 @@ export async function registerAdminBadgeRoutes(app: FastifyInstance) {
     // Returns each known user together with their badges, so the admin UI can
     // render grant/revoke without an extra request per user.
     admin.get('/api/admin/users', async () =>
-      listUsers().map(u => getProfile(u.sub)).filter(Boolean),
+      (await Promise.all((await listUsers()).map(u => getProfile(u.sub)))).filter(Boolean),
     );
 
     admin.get<{ Params: { sub: string } }>('/api/admin/users/:sub', async (req, reply) => {
-      const profile = getProfile(req.params.sub);
+      const profile = await getProfile(req.params.sub);
       if (!profile) return reply.code(404).send({ error: 'user not found' });
       return profile;
     });
 
     // Remove a user from the worker DB (cascades to their badge grants). Use after
-    // deleting them in Authentik — otherwise an active user is re-added on next sign-in.
+    // deleting them in Zitadel — otherwise an active user is re-added on next sign-in.
     admin.delete<{ Params: { sub: string } }>('/api/admin/users/:sub', async (req, reply) => {
       const { sub } = req.params;
-      if (!getUser(sub)) return reply.code(404).send({ error: 'user not found' });
-      deleteUser(sub);
+      if (!(await getUser(sub))) return reply.code(404).send({ error: 'user not found' });
+      await deleteUser(sub);
       return { ok: true };
     });
 
@@ -75,7 +75,7 @@ export async function registerAdminBadgeRoutes(app: FastifyInstance) {
     // The review queue: every user with an active request, oldest first. Includes
     // the admin-set passphrase and sender code so the reviewer can recall what they sent.
     admin.get('/api/admin/flair-requests', async () =>
-      listFlairRequests().map(u => ({
+      (await listFlairRequests()).map(u => ({
         sub: u.sub,
         username: u.username,
         code: u.flair_pending,
@@ -97,20 +97,20 @@ export async function registerAdminBadgeRoutes(app: FastifyInstance) {
         const senderCode = (req.body?.senderCode ?? '').trim();
         if (!passphrase) return reply.code(400).send({ error: 'A confirmation code is required.' });
         if (!senderCode) return reply.code(400).send({ error: 'Your Friend Code is required.' });
-        if (!getUser(sub)) return reply.code(404).send({ error: 'user not found' });
-        if (!markFlairSent(sub, passphrase, senderCode)) {
+        if (!(await getUser(sub))) return reply.code(404).send({ error: 'user not found' });
+        if (!(await markFlairSent(sub, passphrase, senderCode))) {
           return reply.code(409).send({ error: 'Request is not pending (already sent or cleared).' });
         }
-        return { ok: true, profile: getProfile(sub) };
+        return { ok: true, profile: await getProfile(sub) };
       },
     );
 
     // Deny a friend-code request at any stage → clears it; live flair untouched.
     admin.post<{ Params: { sub: string } }>('/api/admin/flair-requests/:sub/deny', async (req, reply) => {
       const { sub } = req.params;
-      if (!getUser(sub)) return reply.code(404).send({ error: 'user not found' });
-      clearFlairRequest(sub);
-      return { ok: true, profile: getProfile(sub) };
+      if (!(await getUser(sub))) return reply.code(404).send({ error: 'user not found' });
+      await clearFlairRequest(sub);
+      return { ok: true, profile: await getProfile(sub) };
     });
 
     // Admin directly sets or clears a user's approved friend code (bypasses workflow).
@@ -118,9 +118,9 @@ export async function registerAdminBadgeRoutes(app: FastifyInstance) {
       '/api/admin/users/:sub/flair',
       async (req, reply) => {
         const { sub } = req.params;
-        if (!getUser(sub)) return reply.code(404).send({ error: 'user not found' });
+        if (!(await getUser(sub))) return reply.code(404).send({ error: 'user not found' });
         const flair = typeof req.body?.flair === 'string' ? req.body.flair.trim() || null : null;
-        setFlair(sub, flair);
+        await setFlair(sub, flair);
         return getProfile(sub);
       },
     );
@@ -133,10 +133,10 @@ export async function registerAdminBadgeRoutes(app: FastifyInstance) {
         const { sub } = req.params;
         const badgeId = (req.body?.badgeId ?? '').trim();
         if (!badgeId) return reply.code(400).send({ error: 'badgeId is required' });
-        if (!getUser(sub)) return reply.code(404).send({ error: 'user not found (they must sign in once first)' });
-        if (!getBadge(badgeId)) return reply.code(404).send({ error: 'badge not found' });
-        grantBadge(sub, badgeId, req.user?.username ?? null);
-        return { ok: true, badges: badgesForUser(sub) };
+        if (!(await getUser(sub))) return reply.code(404).send({ error: 'user not found (they must sign in once first)' });
+        if (!(await getBadge(badgeId))) return reply.code(404).send({ error: 'badge not found' });
+        await grantBadge(sub, badgeId, req.user?.username ?? null);
+        return { ok: true, badges: await badgesForUser(sub) };
       },
     );
 
@@ -145,8 +145,8 @@ export async function registerAdminBadgeRoutes(app: FastifyInstance) {
       '/api/admin/users/:sub/badges/:badgeId',
       async (req) => {
         const { sub, badgeId } = req.params;
-        revokeBadge(sub, badgeId);
-        return { ok: true, badges: badgesForUser(sub) };
+        await revokeBadge(sub, badgeId);
+        return { ok: true, badges: await badgesForUser(sub) };
       },
     );
   });

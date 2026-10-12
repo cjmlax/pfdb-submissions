@@ -64,7 +64,7 @@ export const frogStatsHandler: SubmissionHandler<FrogStatsPayload> = {
   label: 'Frog stats',
   schema: frogStatsSchema,
   async preSubmit(p) {
-    if (pendingPayloadValues('frogStats', 'frogId').includes(p.frogId)) {
+    if ((await pendingPayloadValues('frogStats', 'frogId')).includes(p.frogId)) {
       throw new Error(`${p.frogName} already has a submission pending review.`);
     }
     await planUpdate(p);

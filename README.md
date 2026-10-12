@@ -1,14 +1,14 @@
 # pfdb-submissions
 
-A small self-hosted worker that lets visitors to **pfdb.cjmlax.com** submit
-potential data (Chroma/Glass combinations today; weekly sets and more later),
+A small self-hosted worker that lets visitors to **pfdatabase.com** submit
+potential data (Chroma/Glass combinations, frog stats, mutation completions),
 holds each submission for your review, and — once you approve it — pushes it
 into Teable using a privileged token that **never leaves the server**.
 
 ```
-website form ──POST /api/submit──▶  worker  ──store PENDING──▶  SQLite (/data)
+website form ──POST /api/submit──▶  worker  ──store PENDING──▶  Postgres (+ screenshots in Garage)
                                        │
-   you (Authentik-gated /api/admin/) ──┴── approve ──pushDown──▶  Teable
+   you (admin role, /api/admin/) ──────┴── approve ──pushDown──▶  Teable
 ```
 
 ## Why it exists
@@ -30,49 +30,64 @@ submissions later:
 
 No other worker code changes.
 
+## Deployment
+
+The worker runs in the `pfdb-app` stack of the high-availability cluster
+(`pfdb-infra`), on the active node only. It keeps no local state: the queue,
+users, badges and alerts live in Postgres (reached through the node's HAProxy on
+port 5000, which always points at the primary), and screenshots live in the
+Garage bucket `pfdb-submissions`. After a failover the worker starts on the other
+node with everything intact. The changelog and weekly-sets pollers need no
+coordination, since only one worker runs at a time.
+
+HAProxy routes `pfdatabase.com/api/*` to the worker on port 8090. Requests reach
+it through cloudflared and HAProxy, so the visitor's address is taken from
+`CF-Connecting-IP` (see `src/clientIp.ts`).
+
 ## Configuration
 
-Copy `.env.example` to `.env` and fill it in. Key variables:
+Copy `.env.example` to `.env` (deployed: `stacks/pfdb-app/worker.env`) and fill
+it in. Key variables:
 
 | Var | Purpose |
 | --- | --- |
-| `AUTH_MODE` | `forward` (Authentik via NPM, recommended), `oidc`, or `password` |
-| `ADMIN_GROUP` | Authentik group required for admin access (your "role") |
-| `TRUST_PROXY_SECRET` | Shared secret NPM injects so the worker only trusts proxied requests |
+| `DATABASE_URL` | Postgres connection string; tables are created on first start |
+| `S3_ENDPOINT`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` | Garage endpoint and the `worker-key` |
+| `ZITADEL_SERVICE_TOKEN` | PAT of the `pfdb-worker` machine user, for account linking |
+| `ZITADEL_IDP_DISCORD` / `_TWITCH` / `_GOOGLE` | Zitadel identity provider ids |
 | `TEABLE_TOKEN` | Privileged Teable token (server-side only) |
-| `TEABLE_BASE_ID` | Teable base; tables (e.g. Frog Pairs / Mutations for combos) are resolved by name |
-| `ALLOWED_ORIGIN` | Your website origin(s), for CORS on `/api/submit` |
-| `COOKIE_SECRET` | Signs admin session cookies (password/oidc modes) |
+| `TEABLE_BASE_ID` | Teable base; tables are resolved by name |
+| `ALLOWED_ORIGIN` | Your website origin(s), for CORS |
+| `IP_HASH_SECRET` | Salt for hashed submitter IPs (falls back to `COOKIE_SECRET`) |
 
 ## Run
 
 ### Local dev
 ```bash
 npm install
-cp .env.example .env      # set AUTH_MODE=password + ADMIN_PASSWORD for easy local testing
-npm run dev               # http://localhost:8080
+cp .env.example .env      # point DATABASE_URL and S3_* at a local Postgres and S3
+npm run dev               # http://localhost:8090
 ```
 
 ### Docker
-```bash
-docker compose up -d --build
-```
-The container exposes port 8080 only on the internal `nginx_proxy_network`; NPM
-reaches it by container name. Data (SQLite + uploaded screenshots) persists in
-the `pfdb-submissions-data` volume.
+The image is published to `ghcr.io/cjmlax/pfdb-submissions` on every `v*` tag.
+Its compose service and env file live in `pfdb-infra` (`stacks/pfdb-app`).
 
 ## Endpoints
 
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
 | POST | `/api/submit` | public (rate-limited) | accept a submission |
-| POST | `/api/submit/batch` | public (rate-limited) | accept many items of one type (JSON, no screenshot); per-item results |
+| POST | `/api/submit/batch` | public (rate-limited) | accept many items of one type; per-item results |
 | GET  | `/api/frog-stats/pending` | public | frog ids with a stats submission awaiting review |
 | GET  | `/api/types` | public | list accepted submission types |
-| GET  | `/api/admin/` | admin | web review page |
+| GET  | `/api/me` | user | own profile, badges and linked platforms |
+| POST | `/api/me/links/:provider` | user | start linking Discord / Twitch / Google |
+| GET  | `/api/me/links/callback` | link cookie | finish linking; redirects to `/account` |
+| DELETE | `/api/me/links/:provider` | user | unlink a provider (never the last one) |
 | GET  | `/api/admin/pending` | admin | pending queue as JSON |
 | POST | `/api/admin/:id/approve` | admin | push downstream |
-| POST | `/api/admin/:id/reject` | admin | reject with optional note |
+| POST | `/api/admin/:id/reject` | admin | discard the submission |
 | POST | `/api/admin/batch/:batchId/approve` | admin | push every pending item of a batch; per-item results |
 | POST | `/api/admin/batch/:batchId/reject` | admin | discard every pending item of a batch |
 | GET  | `/healthz` | public | health check |
@@ -82,64 +97,40 @@ the `pfdb-submissions-data` volume.
 ```bash
 npm run review            # interactive approve/reject in the terminal
 npm run review -- --list  # just print the queue
-# in Docker:
-docker compose exec pfdb-submissions node dist/cli/review.js
+# deployed, on the active node:
+docker compose exec worker node dist/cli/review.js
 ```
 
 ## Auth (single bearer-token model, same-origin)
 
 There is **no cookie/session login**. Everything authenticates with the
-signed-in SPA user's **OIDC id_token** (Bearer), issued by the public `pfdb`
-Authentik app. The worker verifies it (`userAuth.ts`) and gates each route:
+signed-in SPA user's **OIDC id_token** (Bearer), issued by the Zitadel app
+`pfdb-web` (project `pfdb-site`) at `https://auth.pfdatabase.com`. The worker
+verifies it (`userAuth.ts`) and gates each route:
 
 - **Public** — `/api/types`, `/api/submit`, `/api/export*`, `/healthz` (open)
 - **Signed-in user** — `requireUser` (e.g. `/api/me`)
-- **Admin** — `requireUserAdmin`, which additionally requires the admin group
-  (`/api/admin/*`: submission review, badges)
+- **Admin** — `requireUserAdmin`, which additionally requires the `admins` role
+  (`/api/admin/*`: submission review, badges, alerts)
+- **Mod** — `requireUserMod`, which requires the `mods` role (`/api/mod/*`)
 
-The API is served **same-origin** with the site at `pfdb.cjmlax.com/api/*`, so
-there's no separate subdomain, no Authentik proxy outpost, no per-path whitelist,
-and no CORS preflight.
+Roles come from the `urn:zitadel:iam:org:project:roles` claim, an object keyed
+by role name. The project needs **Assert roles on authentication** and the app
+**User roles inside ID Token** turned on, or the claim is missing and every
+admin call returns `403`.
 
-**1. Authentik** — one **OAuth2 / OpenID Provider** (public, PKCE) for the SPA,
-bound to an Application with slug `pfdb`. PFDB login is served on a dedicated
-Authentik hostname (`pfdbauth.cjmlax.com`) so it can have its own **Brand**
-(logo, CSS, default flows), making the issuer
-`https://pfdbauth.cjmlax.com/application/o/pfdb/`. Create a group `pfdb-admins`
-and add your admins. The SPA scope mapping emits `pfdb_groups` with the `pfdb-`
-prefix stripped, so membership in `pfdb-admins` arrives as `admins`.
+## Account linking
 
-**2. Nginx Proxy Manager** — on the **website** host (`pfdb.cjmlax.com`), proxy
-the API to the worker over the shared Docker network:
-
-```nginx
-location /api/ {
-    proxy_pass http://pfdb-submissions:8080;
-    proxy_http_version 1.1;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-}
-```
-
-**3. Worker** — set the `USER_OIDC_*` vars (all have defaults in `config.ts`):
-- `USER_OIDC_ISSUER=https://pfdbauth.cjmlax.com/application/o/pfdb/`
-- `USER_OIDC_CLIENT_ID=<the public SPA client id>`
-- `USER_OIDC_ADMIN_GROUP=admins` — must match a group you're in (the stripped
-  form of `pfdb-admins`), or admin calls return `403`.
-
-**Verify** (after deploying):
-
-```bash
-curl -i https://pfdb.cjmlax.com/api/types   # 200 — public endpoint, reaches the worker
-```
-
-Then sign in on the website and open **/admin/submissions** — the React review
-queue. Admin actions send your id_token automatically.
+People sign in only through external providers. Zitadel links a provider to an
+existing account automatically when its verified email matches; for anything
+else, the Account page runs Zitadel's intent flow through the worker
+(`src/routes/links.ts`). The worker reads each user's links with the
+`pfdb-worker` machine user (`src/zitadel.ts`) and stores the platform names, so
+users can pick one as their public display name. A provider account that has
+already signed in on its own is a separate PFDB account and can't be linked.
 
 ## Screenshots
 
-Uploaded screenshots are stored on the worker and shown in the review UI so you
-can verify a combo before approving. On approval the image is attached to the
-combo's Frog Pairs record (a pair carries one screenshot per mutation submitted).
+Uploaded screenshots are stored in Garage and shown in the review UI so you can
+verify a submission before approving. On approval the image is attached to the
+Frog Pairs record (a pair carries one screenshot per mutation submitted).

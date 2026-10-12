@@ -139,7 +139,7 @@ export const comboHandler: SubmissionHandler<ComboPayload> = {
     // Approval verifies the pair. An existing (unverified) pair is overwritten
     // with the submission — fields it leaves blank are cleared, not kept.
     // Link fields take { id } references; source_link and version are plain text.
-    // Store the stable Authentik ID so attribution survives username changes.
+    // Store the stable Zitadel user ID so attribution survives username changes.
     const existing = await findOpenPair(p);
     const screenshotField = await pairField('screenshot');
     const pairFields: Record<string, unknown> = {
@@ -153,7 +153,7 @@ export const comboHandler: SubmissionHandler<ComboPayload> = {
     if (existing) {
       pairId = existing.id;
       // The new screenshot replaces the old one(s) rather than adding to them.
-      if (ctx.screenshotPath) pairFields[screenshotField] = null;
+      if (ctx.screenshot) pairFields[screenshotField] = null;
       await teableUpdateRecordById(pairsId, pairId, pairFields);
     } else {
       pairFields[await pairField('frogA')] = { id: p.frog1Id };
@@ -184,8 +184,8 @@ export const comboHandler: SubmissionHandler<ComboPayload> = {
       mutationId = await teableCreateRecordById(mutId, mutFields);
     }
 
-    if (ctx.screenshotPath && pairId) {
-      await teableUploadAttachmentToRecord(pairsId, pairId, screenshotField, ctx.screenshotPath);
+    if (ctx.screenshot && pairId) {
+      await teableUploadAttachmentToRecord(pairsId, pairId, screenshotField, ctx.screenshot);
     }
 
     return mutationId;

@@ -1,8 +1,6 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import sharp from 'sharp';
 import { config } from './config';
-import { uploadsDir } from './db';
+import { putObject } from './storage';
 import { autoCropBreedScreenshot } from './screenshotAutoCrop';
 
 export async function compressImage(input: Buffer): Promise<{ data: Buffer; ext: 'webp' }> {
@@ -36,21 +34,15 @@ export function originalScreenshotName(id: string): string {
   return `${id}.orig.webp`;
 }
 
-export function removeOriginalScreenshot(id: string): void {
-  const p = path.join(uploadsDir, originalScreenshotName(id));
-  if (fs.existsSync(p)) fs.unlinkSync(p);
-}
-
-// Stores an uploaded screenshot for submission `id` and returns its filename.
-// With `autoCrop`, a recognized breeding screen is cropped/masked/resized and
-// the original kept for re-cropping; anything unrecognized is stored as-is
-// (compressed) for the admin to crop by hand.
+// Stores an uploaded screenshot for submission `id` and returns its key, plus
+// the key of the kept original when it was auto-cropped. With `autoCrop`, a
+// recognized breeding screen is cropped/masked/resized; anything unrecognized
+// is stored as-is (compressed) for the admin to crop by hand.
 export async function storeScreenshot(
   id: string,
   input: Buffer,
   opts: { autoCrop: boolean },
-): Promise<{ screenshot: string; autoCropped: boolean }> {
-  removeOriginalScreenshot(id);
+): Promise<{ screenshot: string; original: string | null }> {
   const original = await compressImage(input);
   const screenshot = `${id}.${original.ext}`;
 
@@ -67,10 +59,11 @@ export async function storeScreenshot(
   }
 
   if (cropped) {
-    fs.writeFileSync(path.join(uploadsDir, originalScreenshotName(id)), original.data);
-    fs.writeFileSync(path.join(uploadsDir, screenshot), cropped);
-  } else {
-    fs.writeFileSync(path.join(uploadsDir, screenshot), original.data);
+    const originalKey = originalScreenshotName(id);
+    await putObject(originalKey, original.data);
+    await putObject(screenshot, cropped);
+    return { screenshot, original: originalKey };
   }
-  return { screenshot, autoCropped: !!cropped };
+  await putObject(screenshot, original.data);
+  return { screenshot, original: null };
 }

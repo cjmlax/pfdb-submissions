@@ -2,9 +2,9 @@ import type { ZodType, ZodTypeDef } from 'zod';
 
 // Context passed to a handler when an approved submission is pushed downstream.
 export interface PushContext {
-  // Absolute path to the reviewer-visible screenshot, if one was uploaded.
-  screenshotPath: string | null;
-  // Stable Authentik subject of the submitter — the value stored downstream so
+  // The reviewer-visible screenshot, if one was uploaded.
+  screenshot: { name: string; data: Buffer } | null;
+  // Stable Zitadel user id of the submitter — the value stored downstream so
   // attribution survives a username change. Null if submitted anonymously.
   submitterSub?: string | null;
   // Display name at submission time (kept for context; not the stored key).

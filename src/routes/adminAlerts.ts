@@ -24,7 +24,7 @@ export async function registerAdminAlertRoutes(app: FastifyInstance) {
   await app.register(async (admin) => {
     admin.addHook('preHandler', requireUserAdmin);
 
-    admin.get('/api/admin/alerts', async () => listAlerts().map(toDto));
+    admin.get('/api/admin/alerts', async () => (await listAlerts()).map(toDto));
 
     admin.post<{ Body: { message?: string; level?: string } }>(
       '/api/admin/alerts',
@@ -33,7 +33,7 @@ export async function registerAdminAlertRoutes(app: FastifyInstance) {
         const level = (req.body?.level ?? 'info') as AlertLevel;
         if (!message) return reply.code(400).send({ error: 'message is required' });
         if (!LEVELS.has(level)) return reply.code(400).send({ error: 'level must be info, warning, or critical' });
-        return { ok: true, alert: toDto(createAlert(message, level)) };
+        return { ok: true, alert: toDto(await createAlert(message, level)) };
       },
     );
 
@@ -41,7 +41,7 @@ export async function registerAdminAlertRoutes(app: FastifyInstance) {
       '/api/admin/alerts/:id',
       async (req, reply) => {
         const { id } = req.params;
-        if (!getAlert(id)) return reply.code(404).send({ error: 'alert not found' });
+        if (!(await getAlert(id))) return reply.code(404).send({ error: 'alert not found' });
         const { message, level, active } = req.body ?? {};
         if (level !== undefined && !LEVELS.has(level as AlertLevel)) {
           return reply.code(400).send({ error: 'level must be info, warning, or critical' });
@@ -49,7 +49,7 @@ export async function registerAdminAlertRoutes(app: FastifyInstance) {
         if (message !== undefined && !message.trim()) {
           return reply.code(400).send({ error: 'message cannot be empty' });
         }
-        const updated = updateAlert(id, {
+        const updated = await updateAlert(id, {
           message: message?.trim(),
           level: level as AlertLevel | undefined,
           active,
@@ -60,8 +60,8 @@ export async function registerAdminAlertRoutes(app: FastifyInstance) {
 
     admin.delete<{ Params: { id: string } }>('/api/admin/alerts/:id', async (req, reply) => {
       const { id } = req.params;
-      if (!getAlert(id)) return reply.code(404).send({ error: 'alert not found' });
-      deleteAlert(id);
+      if (!(await getAlert(id))) return reply.code(404).send({ error: 'alert not found' });
+      await deleteAlert(id);
       return { ok: true };
     });
   });

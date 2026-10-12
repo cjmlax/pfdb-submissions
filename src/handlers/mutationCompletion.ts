@@ -129,7 +129,7 @@ export const mutationCompletionHandler: SubmissionHandler<MutationCompletionPayl
   autoCropScreenshot: true,
   schema: mutationCompletionSchema,
   async preSubmit(p) {
-    if (pendingPayloadValues('mutationCompletion', 'mutationId').includes(p.mutationId)) {
+    if ((await pendingPayloadValues('mutationCompletion', 'mutationId')).includes(p.mutationId)) {
       throw new Error(`${p.frog1Name} + ${p.frog2Name} → ${p.resultFrogName} already has a submission pending review.`);
     }
     await planUpdate(p);
@@ -138,7 +138,7 @@ export const mutationCompletionHandler: SubmissionHandler<MutationCompletionPayl
   dedupeKey: (p) => p.mutationId,
   summarize: (p) => `${p.variant}: ${p.frog1Name} + ${p.frog2Name} → ${p.resultFrogName} — lost ${p.lostFrogName}`,
   async pushDown(p, ctx) {
-    if (!ctx.screenshotPath) throw new Error('A screenshot is required to complete a mutation.');
+    if (!ctx.screenshot) throw new Error('A screenshot is required to complete a mutation.');
     const plan = await planUpdate(p);
 
     if (plan.needsLost) {
@@ -153,7 +153,7 @@ export const mutationCompletionHandler: SubmissionHandler<MutationCompletionPayl
     }
     // Added alongside any screenshot the pair already has (another of its
     // mutations may rely on it), never replacing it.
-    await teableUploadAttachmentToRecord(plan.pairsId, plan.pairId, await pairField('screenshot'), ctx.screenshotPath);
+    await teableUploadAttachmentToRecord(plan.pairsId, plan.pairId, await pairField('screenshot'), ctx.screenshot);
 
     return p.mutationId;
   },
