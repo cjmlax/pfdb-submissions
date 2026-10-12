@@ -3,7 +3,7 @@ import { config } from './config';
 // Minimal privileged Teable client. The write token lives only in this process,
 // never in the browser — which is the entire reason this worker exists.
 
-function authHeader(): Record<string, string> {
+export function authHeader(): Record<string, string> {
   if (!config.teable.token) {
     throw new Error('TEABLE_TOKEN is not set — cannot talk to Teable.');
   }

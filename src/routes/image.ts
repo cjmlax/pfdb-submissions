@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { config } from '../config';
-import { resolveTableId } from '../teable';
+import { authHeader, resolveTableId } from '../teable';
 
 // Proxies Teable attachment images through this worker's own origin.
 //
@@ -10,7 +10,7 @@ import { resolveTableId } from '../teable';
 // stale long before the underlying data does, and <img> requests start
 // 400ing with "Token has expired". This endpoint gives the SPA a stable URL
 // (table + record + field) that never expires; on every hit it re-fetches the
-// single record (public, unauthenticated on this Teable instance) for a fresh
+// single record (with the worker's Teable token) for a fresh
 // presignedUrl and streams the bytes back same-origin.
 // Each table's frontend fetcher uses a different fieldKeyType convention
 // (fetchTable → dbFieldName, fetchMutations → display name), and the field param
@@ -54,12 +54,15 @@ export async function registerImageRoutes(app: FastifyInstance) {
         `?fieldKeyType=${tableCfg.fieldKeyType}`;
       let recordRes: Response;
       try {
-        recordRes = await fetch(recordUrl, { headers: { Accept: 'application/json' } });
+        recordRes = await fetch(recordUrl, { headers: { Accept: 'application/json', ...authHeader() } });
       } catch {
         return reply.code(502).send({ error: 'Could not reach the database. Please try again.' });
       }
       if (recordRes.status === 404) return reply.code(404).send({ error: 'record not found' });
-      if (!recordRes.ok) return reply.code(502).send({ error: 'Database lookup failed.' });
+      if (!recordRes.ok) {
+        req.log.warn({ table, recordId, status: recordRes.status }, 'image: Teable record lookup failed');
+        return reply.code(502).send({ error: 'Database lookup failed.' });
+      }
 
       const record = (await recordRes.json()) as { fields?: Record<string, unknown> };
       const fieldVal = record.fields?.[field];
@@ -72,7 +75,10 @@ export async function registerImageRoutes(app: FastifyInstance) {
       } catch {
         return reply.code(502).send({ error: 'Could not reach the database. Please try again.' });
       }
-      if (!imgRes.ok || !imgRes.body) return reply.code(502).send({ error: 'Attachment fetch failed.' });
+      if (!imgRes.ok || !imgRes.body) {
+        req.log.warn({ table, recordId, status: imgRes.status, host: new URL(entry.presignedUrl).host }, 'image: attachment fetch failed');
+        return reply.code(502).send({ error: 'Attachment fetch failed.' });
+      }
 
       const buf = Buffer.from(await imgRes.arrayBuffer());
       reply.header('Content-Type', entry.mimetype ?? imgRes.headers.get('content-type') ?? 'application/octet-stream');
