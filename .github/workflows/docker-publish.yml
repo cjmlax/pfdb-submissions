@@ -1,10 +1,23 @@
 name: Build and publish image
 
+# Images are only built for semver release tags (e.g. v1.2.3 or v1.3.0-rc.1).
+# Plain commits to main no longer produce an image.
+#
+# Tags pushed for a stable release (vX.Y.Z):
+#   X.Y.Z   exact, immutable — pin this in compose
+#   X.Y     moves to the newest patch of that minor
+#   X       moves to the newest minor/patch of that major (skipped for 0.x)
+#   latest  moves to the newest stable release
+#   sha-xxxxxxx  traceability back to the commit
+#
+# Pre-releases (vX.Y.Z-rc.N, -beta.N, ...) only get their exact tag + sha,
+# so they never move latest / X.Y / X.
 on:
   push:
-    branches: [ main ]
-    tags: [ 'v*' ]
-  workflow_dispatch:        # lets you trigger a build manually from the Actions tab
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+  workflow_dispatch:        # rebuild an existing tag: pick it in the "Use workflow from" dropdown
 
 jobs:
   build:
@@ -13,7 +26,22 @@ jobs:
       contents: read
       packages: write       # required to push to GHCR
     steps:
+      - name: Require a tag ref
+        if: github.ref_type != 'tag'
+        run: |
+          echo "::error::Run this workflow against a v*.*.* tag, not a branch."
+          exit 1
+
       - uses: actions/checkout@v4
+
+      - name: Check tag matches package.json version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $pkg"
+            exit 1
+          fi
 
       - name: Set lowercase image name
         run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
@@ -33,9 +61,13 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE }}
+          # latest=auto: only applied to stable (non-prerelease) semver tags
+          flavor: |
+            latest=auto
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}},enable=${{ !startsWith(github.ref_name, 'v0.') }}
             type=sha,format=short
 
       - name: Build and push
